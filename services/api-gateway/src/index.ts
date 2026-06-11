@@ -14,147 +14,133 @@
  *   GET  /api/deployments          — Soroban contract addresses (testnet)
  */
 
-import { createServer, IncomingMessage, ServerResponse } from 'http';
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import { validateEnv } from '@bettapay/validation';
+import { PrismaClient } from '@prisma/client';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3000');
 
-// ── In-memory store (replace with DB in production) ──────────────────────────
+const fastify = Fastify({ logger: true });
+const prisma = new PrismaClient();
 
-const db = {
-  merchants: new Map<string, any>(),
-  payments:  new Map<string, any>(),
-  settlements: new Map<string, any>(),
-};
-
-// Seed admin merchant
-db.merchants.set('GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD', {
-  id: 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD',
-  name: 'BettaPay Merchant LLC',
-  ownerId: 'admin-user-001',
-  createdAt: new Date().toISOString(),
-  settings: { preferredAsset: 'USDC', autoSettle: true },
-});
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function body(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let s = '';
-    req.on('data', (c) => { s += c; });
-    req.on('end', () => resolve(s));
-    req.on('error', reject);
-  });
-}
-
-function json(res: ServerResponse, status: number, data: unknown) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  });
-  res.end(JSON.stringify(data));
-}
+// Setup plugins
+fastify.register(cors, { origin: '*' });
 
 function uid(prefix: string) {
   return prefix + '_' + Math.random().toString(36).slice(2, 15);
 }
 
-// ── Server ───────────────────────────────────────────────────────────────────
+// Routes
+fastify.get('/api/health', async (request, reply) => {
+  return { status: 'healthy', env: env.NODE_ENV };
+});
 
-const server = createServer(async (req, res) => {
-  const url  = new URL(req.url ?? '', `http://${req.headers.host}`);
-  const path = url.pathname;
-  const method = req.method;
+// Merchants
+fastify.post('/api/merchants', async (request, reply) => {
+  const d = request.body as any;
+  if (!d.id || !d.name) return reply.code(400).send({ error: 'id and name required' });
+  const merchant = await prisma.merchant.create({
+    data: {
+      id: d.id,
+      name: d.name,
+      ownerId: d.ownerId || 'unknown',
+      settings: d.settings || {},
+    }
+  });
+  return reply.code(201).send({ success: true, merchant });
+});
 
-  if (method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    });
-    res.end();
-    return;
-  }
+fastify.get('/api/merchants/:id', async (request, reply) => {
+  const { id } = request.params as any;
+  const merchant = await prisma.merchant.findUnique({ where: { id } });
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+  return merchant;
+});
 
-  console.log(`[API Gateway] ${method} ${path}`);
+// Payments
+fastify.post('/api/payments', async (request, reply) => {
+  const d = request.body as any;
+  if (!d.merchantId || !d.amount || !d.asset)
+    return reply.code(400).send({ error: 'merchantId, amount, asset required' });
+  
+  const payment = await prisma.payment.create({
+    data: {
+      id: uid('pay'),
+      merchantId: d.merchantId,
+      payerId: d.payerId,
+      amount: String(d.amount),
+      asset: d.asset,
+      status: 'initiated',
+    }
+  });
+  return reply.code(201).send(payment);
+});
 
+fastify.get('/api/payments/:id', async (request, reply) => {
+  const { id } = request.params as any;
+  const payment = await prisma.payment.findUnique({ where: { id } });
+  if (!payment) return reply.code(404).send({ error: 'Payment not found' });
+  return payment;
+});
+
+// Settlements
+fastify.post('/api/settlements', async (request, reply) => {
+  const d = request.body as any;
+  if (!d.merchantId || !d.amount || !d.asset)
+    return reply.code(400).send({ error: 'merchantId, amount, asset required' });
+  
+  const settlement = await prisma.settlement.create({
+    data: {
+      id: uid('set'),
+      merchantId: d.merchantId,
+      totalAmount: String(d.amount),
+      asset: d.asset,
+      status: 'pending',
+    }
+  });
+  return reply.code(201).send(settlement);
+});
+
+fastify.get('/api/deployments', async (request, reply) => {
+  return {
+    network: 'Test SDF Network ; September 2015',
+    adminAddress: process.env.ADMIN_ADDRESS || 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD',
+    contracts: [
+      {
+        name: 'Settlement contract',
+        contractId: process.env.SETTLEMENT_CONTRACT_ID ?? 'CC74K4KWT4ZSTDBGEYM2LT2N4H6R2HV7VA5HEWUQVPMHVDPL44EQSCNM',
+        explorerUrl: 'https://lab.stellar.org/r/testnet/contract/CC74K4KWT4ZSTDBGEYM2LT2N4H6R2HV7VA5HEWUQVPMHVDPL44EQSCNM',
+      },
+      {
+        name: 'Governance contract',
+        contractId: process.env.GOVERNANCE_CONTRACT_ID ?? 'CATDQJ4O24SOWJHJFHA4GZCVBFSAAELJ62FXI7XSAMNQ753BOWHIM3LJ',
+        explorerUrl: 'https://lab.stellar.org/r/testnet/contract/CATDQJ4O24SOWJHJFHA4GZCVBFSAAELJ62FXI7XSAMNQ753BOWHIM3LJ',
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  };
+});
+
+const start = async () => {
   try {
-    // Health
-    if (path === '/api/health' && method === 'GET')
-      return json(res, 200, { status: 'healthy', env: env.NODE_ENV });
+    // Seed admin merchant
+    await prisma.merchant.upsert({
+      where: { id: 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD' },
+      update: {},
+      create: {
+        id: 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD',
+        name: 'BettaPay Merchant LLC',
+        ownerId: 'admin-user-001',
+        settings: { preferredAsset: 'USDC', autoSettle: true },
+      }
+    });
 
-    // Merchants
-    if (path === '/api/merchants' && method === 'POST') {
-      const d = JSON.parse(await body(req));
-      if (!d.id || !d.name) return json(res, 400, { error: 'id and name required' });
-      db.merchants.set(d.id, { ...d, createdAt: new Date().toISOString() });
-      return json(res, 201, { success: true, merchant: d });
-    }
-
-    if (path.startsWith('/api/merchants/') && method === 'GET') {
-      const id = path.split('/').at(-1)!;
-      const m = db.merchants.get(id);
-      return m ? json(res, 200, m) : json(res, 404, { error: 'Merchant not found' });
-    }
-
-    // Payments
-    if (path === '/api/payments' && method === 'POST') {
-      const d = JSON.parse(await body(req));
-      if (!d.merchantId || !d.amount || !d.asset)
-        return json(res, 400, { error: 'merchantId, amount, asset required' });
-      const payment = { id: uid('pay'), ...d, status: 'initiated', createdAt: new Date().toISOString() };
-      db.payments.set(payment.id, payment);
-      return json(res, 201, payment);
-    }
-
-    if (path.startsWith('/api/payments/') && method === 'GET') {
-      const id = path.split('/').at(-1)!;
-      const p = db.payments.get(id);
-      return p ? json(res, 200, p) : json(res, 404, { error: 'Payment not found' });
-    }
-
-    // Settlements
-    if (path === '/api/settlements' && method === 'POST') {
-      const d = JSON.parse(await body(req));
-      if (!d.merchantId || !d.amount || !d.asset)
-        return json(res, 400, { error: 'merchantId, amount, asset required' });
-      const settlement = { id: uid('set'), ...d, status: 'pending', initiatedAt: new Date().toISOString() };
-      db.settlements.set(settlement.id, settlement);
-      return json(res, 201, settlement);
-    }
-
-    // Contract deployments
-    if (path === '/api/deployments' && method === 'GET') {
-      return json(res, 200, {
-        network: 'Test SDF Network ; September 2015',
-        adminAddress: 'GCCHHKNI7GRA5QWC7RCTT3OHO7SKAUMKQA6IBWEQEO2SXI3GF376UHDD',
-        contracts: [
-          {
-            name: 'Settlement contract',
-            contractId: process.env.SETTLEMENT_CONTRACT_ID ?? 'CC74K4KWT4ZSTDBGEYM2LT2N4H6R2HV7VA5HEWUQVPMHVDPL44EQSCNM',
-            explorerUrl: 'https://lab.stellar.org/r/testnet/contract/CC74K4KWT4ZSTDBGEYM2LT2N4H6R2HV7VA5HEWUQVPMHVDPL44EQSCNM',
-          },
-          {
-            name: 'Governance contract',
-            contractId: process.env.GOVERNANCE_CONTRACT_ID ?? 'CATDQJ4O24SOWJHJFHA4GZCVBFSAAELJ62FXI7XSAMNQ753BOWHIM3LJ',
-            explorerUrl: 'https://lab.stellar.org/r/testnet/contract/CATDQJ4O24SOWJHJFHA4GZCVBFSAAELJ62FXI7XSAMNQ753BOWHIM3LJ',
-          },
-        ],
-        updatedAt: new Date().toISOString(),
-      });
-    }
-
-    return json(res, 404, { error: 'Not found' });
-
-  } catch (err: any) {
-    console.error('[API Gateway] Error:', err);
-    return json(res, 500, { error: 'Internal Server Error', message: err.message });
+    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
   }
-});
-
-server.listen(PORT, () => {
-  console.log(`[API Gateway] Running on port ${PORT} (${env.NODE_ENV})`);
-});
+};
+start();

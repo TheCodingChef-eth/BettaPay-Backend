@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 export * from './schemas.js';
-export * from './env.js';
 
 // Custom backend environment schema
 export const EnvSchema = z.object({

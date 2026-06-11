@@ -9,7 +9,8 @@
  *   GET /api/health              — liveness probe
  */
 
-import { createServer } from 'http';
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
 import { validateEnv } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
@@ -21,9 +22,8 @@ const SETTLEMENT_CONTRACT_ID =
 const GOVERNANCE_CONTRACT_ID =
   process.env.GOVERNANCE_CONTRACT_ID ?? 'CATDQJ4O24SOWJHJFHA4GZCVBFSAAELJ62FXI7XSAMNQ753BOWHIM3LJ';
 
-console.log(`[Indexer] Starting in ${env.NODE_ENV} mode`);
-console.log(`[Indexer] Watching settlement:  ${SETTLEMENT_CONTRACT_ID}`);
-console.log(`[Indexer] Watching governance:  ${GOVERNANCE_CONTRACT_ID}`);
+const fastify = Fastify({ logger: true });
+fastify.register(cors, { origin: '*' });
 
 // In-memory event ring buffer (50 events max)
 const events: any[] = [];
@@ -38,28 +38,17 @@ function pushEvent(topic: string, contractId: string, data: Record<string, unkno
   };
   events.unshift(event);
   if (events.length > 50) events.pop();
-  console.log(`[Indexer] ${topic} — ${event.id}`);
+  fastify.log.info(`[Indexer] ${topic} — ${event.id}`);
   return event;
 }
 
 // HTTP API
-const server = createServer((req, res) => {
-  const url = new URL(req.url ?? '', `http://${req.headers.host}`);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Content-Type', 'application/json');
+fastify.get('/api/health', async (request, reply) => {
+  return { status: 'ok', indexedEvents: events.length };
+});
 
-  if (url.pathname === '/api/health') {
-    res.writeHead(200);
-    return res.end(JSON.stringify({ status: 'ok', indexedEvents: events.length }));
-  }
-
-  if (url.pathname === '/api/events') {
-    res.writeHead(200);
-    return res.end(JSON.stringify({ events, total: events.length }));
-  }
-
-  res.writeHead(404);
-  return res.end(JSON.stringify({ error: 'Not found' }));
+fastify.get('/api/events', async (request, reply) => {
+  return { events, total: events.length };
 });
 
 // Simulate polling Stellar RPC for contract events
@@ -77,6 +66,12 @@ setInterval(() => {
   }
 }, 10_000);
 
-server.listen(PORT, () => {
-  console.log(`[Indexer] Listening on port ${PORT}`);
-});
+const start = async () => {
+  try {
+    await fastify.listen({ port: PORT, host: '0.0.0.0' });
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
+  }
+};
+start();

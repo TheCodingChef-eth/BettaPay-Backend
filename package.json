@@ -27,5 +27,14 @@
     "prettier": "^3.1.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@prisma/client": "^7.8.0",
+    "@stellar/stellar-sdk": "^15.1.0",
+    "bullmq": "^5.78.0",
+    "fastify": "^5.8.5",
+    "ioredis": "^5.11.1",
+    "prisma": "^7.8.0"
   }
 }

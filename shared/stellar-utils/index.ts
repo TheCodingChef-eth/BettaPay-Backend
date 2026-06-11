@@ -3,9 +3,10 @@
  * Provides helpers for interacting with the Stellar blockchain
  */
 
+import { StrKey } from '@stellar/stellar-sdk';
+
 export function validateStellarAddress(address: string): boolean {
-  // Stellar addresses start with 'G' and are base32 encoded
-  return /^G[A-Z2-7]{55}$/.test(address);
+  return StrKey.isValidEd25519PublicKey(address);
 }
 
 // Convert decimal string to stroops (string of integer stroops)

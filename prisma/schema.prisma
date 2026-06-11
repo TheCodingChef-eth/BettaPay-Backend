@@ -1,0 +1,37 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Merchant {
+  id        String   @id
+  name      String
+  ownerId   String
+  createdAt DateTime @default(now())
+  settings  Json?
+}
+
+model Payment {
+  id         String   @id
+  merchantId String
+  payerId    String?
+  amount     String
+  asset      String
+  status     String
+  reference  String?
+  createdAt  DateTime @default(now())
+}
+
+model Settlement {
+  id          String   @id
+  merchantId  String
+  totalAmount String
+  asset       String
+  status      String
+  initiatedAt DateTime @default(now())
+  completedAt DateTime?
+}
