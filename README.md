@@ -1,4 +1,4 @@
-# BettaPay Backend
+# <img src="./docs_logo.png" width="30" /> BettaPay Backend
 
 Node.js backend services for the BettaPay Stellar payment infrastructure.
 
