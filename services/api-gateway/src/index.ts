@@ -423,7 +423,6 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
 fastify.get('/api/deployments', async (request, reply) => {
   return {
     network: env.STELLAR_NETWORK_PASSPHRASE,
-    adminAddress: env.ADMIN_ADDRESS,
     contracts: [
       {
         name: 'Settlement contract',
