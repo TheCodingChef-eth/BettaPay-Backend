@@ -25,6 +25,7 @@ model Merchant {
   name        String
   ownerId     String
   createdAt   DateTime     @default(now())
+  deletedAt   DateTime?
   settings    Json?
   payments    Payment[]
   settlements Settlement[]

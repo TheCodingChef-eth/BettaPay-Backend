@@ -11,7 +11,11 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
-import { validateEnv, CreateSettlementBody } from '@bettapay/validation';
+import {
+  validateEnv,
+  CreateSettlementBody,
+  Settlement,
+} from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
 
 const env = validateEnv(process.env);
@@ -42,7 +46,7 @@ const worker = new Worker('settlements', async job => {
 }, { connection: connectionParams });
 
 // In-memory store for development (Gateway uses DB, this worker processes memory queue)
-const settlements: any[] = [];
+const settlements: Settlement[] = [];
 
 // Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
 async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
@@ -65,18 +69,23 @@ fastify.post('/api/settlements', async (request, reply) => {
     
     const fee = (gross * feeBps) / 10_000;
     const net = gross - fee;
+    const initiatedAt = new Date().toISOString();
 
-    const record = {
-      id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
+    const record: Settlement = {
+      id: "set_" + crypto.randomUUID().replace(/-/g, ""),
       merchantId: d.merchantId,
-      grossAmount: gross.toFixed(2),
-      feeAmount: fee.toFixed(2),
-      netAmount: net.toFixed(2),
-      feeBps: feeBps,
-      asset: d.asset ?? 'USDC',
-      status: 'completed',
-      contractRef: env.SETTLEMENT_CONTRACT_ID,
-      createdAt: new Date().toISOString(),
+      totalAmount: d.amount,
+      asset: d.asset,
+      initiatedAt,
+      completedAt: initiatedAt,
+      status: "completed",
+      metadata: {
+        grossAmount: gross.toFixed(2),
+        feeAmount: fee.toFixed(2),
+        netAmount: net.toFixed(2),
+        feeBps,
+        contractRef: env.SETTLEMENT_CONTRACT_ID,
+      },
     };
 
     settlements.unshift(record);

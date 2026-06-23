@@ -5,26 +5,29 @@
  * Handles merchant registration, payment sessions, and settlement requests.
  *
  * Endpoints:
- *   GET  /api/health               — liveness probe
- *   POST /api/auth/token           — login / get JWT
- *   POST /api/merchants            — register merchant (protected)
- *   GET  /api/merchants/:id        — fetch merchant
- *   POST /api/payments             — initiate payment session (protected)
- *   GET  /api/payments/:id         — fetch payment session
- *   POST /api/settlements          — trigger settlement (protected)
- *   GET  /api/deployments          — Soroban contract addresses (testnet)
+ *   GET    /api/health               — liveness probe
+ *   POST   /api/auth/token           — login / get JWT
+ *   POST   /api/merchants            — register merchant (protected)
+ *   GET    /api/merchants/:id        — fetch merchant
+ *   DELETE /api/merchants/:id        — soft-delete merchant (protected)
+ *   POST   /api/merchants/:id/restore — restore soft-deleted merchant (protected)
+ *   POST   /api/payments             — initiate payment session (protected)
+ *   GET    /api/payments/:id         — fetch payment session
+ *   POST   /api/settlements          — trigger settlement (protected)
+ *   GET    /api/deployments          — Soroban contract addresses (testnet)
  */
 
 import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyJwt from '@fastify/jwt';
+import rateLimit from '@fastify/rate-limit';
 import crypto from 'crypto';
 import { validateEnv } from '@bettapay/validation';
-import { 
-  CreateMerchantBody, 
-  CreatePaymentBody, 
-  CreateSettlementBody, 
-  AuthTokenBody 
+import {
+  CreateMerchantBody,
+  CreatePaymentBody,
+  CreateSettlementBody,
+  AuthTokenBody
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import rateLimit from '@fastify/rate-limit';
@@ -35,10 +38,13 @@ declare module 'fastify' {
   }
 }
 
+const SENSITIVE_FIELDS = ['secret', 'password', 'token', 'privateKey', 'secretKey'];
+const isProduction = process.env.NODE_ENV === 'production';
+
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3000');
 
-const fastify = Fastify({ 
+const fastify = Fastify({
   logger: true,
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
@@ -47,8 +53,8 @@ const fastify = Fastify({
 const prisma = new PrismaClient();
 
 // Setup plugins
-fastify.register(cors, { 
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+fastify.register(cors, {
+  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
 });
 
 fastify.register(fastifyJwt, {
@@ -65,12 +71,32 @@ fastify.register(rateLimit, {
   addHeaders: true
 });
 
+fastify.register(rateLimit, {
+  max: 100,
+  timeWindow: '1 minute',
+});
+
+// Request body logging for mutation endpoints
+async function logRequestBody(request: FastifyRequest, reply: FastifyReply) {
+  if (request.body && typeof request.body === 'object') {
+    const cloned = JSON.parse(JSON.stringify(request.body));
+    for (const key of SENSITIVE_FIELDS) {
+      if (key in cloned) {
+        cloned[key] = '[REDACTED]';
+      }
+    }
+    const logLevel = isProduction ? 'debug' : 'info';
+    request.log[logLevel]({ requestId: request.id, body: cloned }, 'incoming request body');
+  }
+}
+
 // Authentication hook
 fastify.decorate('authenticate', async function (request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
   } catch (err) {
-    reply.send(err);
+    request.log.error(err);
+    reply.code(401).send({ error: 'Unauthorized' });
   }
 });
 
@@ -82,9 +108,9 @@ fastify.get('/api/health', async (request, reply) => {
 fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
   try {
     const d = AuthTokenBody.parse(request.body);
-    const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
+    const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
     if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
-    
+
     // In a real system, you would verify the secret/password here.
     // For this example, we'll just issue a token if the merchant exists.
     const token = fastify.jwt.sign({ merchantId: merchant.id, ownerId: merchant.ownerId });
@@ -95,7 +121,10 @@ fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1
 });
 
 // Merchants
-fastify.post('/api/merchants', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+fastify.post('/api/merchants', {
+  preValidation: [fastify.authenticate, logRequestBody],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
   try {
     const d = CreateMerchantBody.parse(request.body);
     const merchant = await prisma.merchant.create({
@@ -114,13 +143,55 @@ fastify.post('/api/merchants', { preValidation: [fastify.authenticate] }, async 
 
 fastify.get('/api/merchants/:id', async (request, reply) => {
   const { id } = request.params as { id: string };
-  const merchant = await prisma.merchant.findUnique({ where: { id } });
+  const merchant = await prisma.merchant.findFirst({
+    where: { id, deletedAt: null },
+  });
   if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
   return merchant;
 });
 
+fastify.delete('/api/merchants/:id', {
+  preValidation: [fastify.authenticate],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const merchant = await prisma.merchant.findFirst({
+    where: { id, deletedAt: null },
+  });
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+
+  await prisma.merchant.update({
+    where: { id },
+    data: { deletedAt: new Date() },
+  });
+
+  return reply.code(200).send({ success: true });
+});
+
+fastify.post('/api/merchants/:id/restore', {
+  preValidation: [fastify.authenticate],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const merchant = await prisma.merchant.findUnique({ where: { id } });
+  if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
+  if (!merchant.deletedAt) {
+    return reply.code(400).send({ error: 'Merchant is not soft-deleted' });
+  }
+
+  const restored = await prisma.merchant.update({
+    where: { id },
+    data: { deletedAt: null },
+  });
+
+  return reply.code(200).send({ success: true, merchant: restored });
+});
+
 // Payments
-fastify.post('/api/payments', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+fastify.post('/api/payments', {
+  preValidation: [fastify.authenticate, logRequestBody],
+  config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
+}, async (request, reply) => {
   try {
     const d = CreatePaymentBody.parse(request.body);
     const payment = await prisma.payment.create({
@@ -148,7 +219,10 @@ fastify.get('/api/payments/:id', async (request, reply) => {
 });
 
 // Settlements
-fastify.post('/api/settlements', { preValidation: [fastify.authenticate] }, async (request, reply) => {
+fastify.post('/api/settlements', {
+  preValidation: [fastify.authenticate, logRequestBody],
+  config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
+}, async (request, reply) => {
   try {
     const d = CreateSettlementBody.parse(request.body);
     const settlement = await prisma.settlement.create({
@@ -185,6 +259,28 @@ fastify.get('/api/deployments', async (request, reply) => {
     updatedAt: new Date().toISOString(),
   };
 });
+
+// Graceful shutdown
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  fastify.log.info(`Received ${signal}, shutting down gracefully...`);
+
+  try {
+    await fastify.close();
+    await prisma.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error(err, 'Error during shutdown');
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 const start = async () => {
   try {

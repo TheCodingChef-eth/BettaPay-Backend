@@ -17,6 +17,7 @@ export const merchantSchema = z.object({
   name: z.string(),
   ownerId: idSchema,
   createdAt: isoDateString,
+  deletedAt: isoDateString.optional(),
   settings: z.record(z.any()).optional()
 });
 
