@@ -8,7 +8,7 @@
  *   GET    /api/health               — liveness probe
  *   POST   /api/auth/token           — login / get JWT
  *   POST   /api/merchants            — register merchant (protected)
- *   GET    /api/merchants/:id        — fetch merchant
+ *   GET    /api/merchants/:id        — fetch merchant (protected)
  *   DELETE /api/merchants/:id        — soft-delete merchant (protected)
  *   POST   /api/merchants/:id/restore — restore soft-deleted merchant (protected)
  *   POST   /api/payments             — initiate payment session (protected)
@@ -35,8 +35,41 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 declare module 'fastify' {
   export interface FastifyInstance {
-    authenticate: any;
+    authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
+}
+
+interface MerchantParams {
+  id: string;
+}
+
+interface PaymentParams {
+  id: string;
+}
+
+interface AuthTokenRouteBody {
+  merchantId?: unknown;
+}
+
+interface CreateMerchantRouteBody {
+  id?: unknown;
+  name?: unknown;
+  ownerId?: unknown;
+  settings?: unknown;
+}
+
+interface CreatePaymentRouteBody {
+  merchantId?: unknown;
+  payerId?: unknown;
+  amount?: unknown;
+  asset?: unknown;
+  reference?: unknown;
+}
+
+interface CreateSettlementRouteBody {
+  merchantId?: unknown;
+  amount?: unknown;
+  asset?: unknown;
 }
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -53,6 +86,36 @@ const fastify = Fastify({
 
 // --- Response logging hooks -------------------------------------------------
 const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password', 'privateKey', 'secretKey']);
+const CONTROL_CHARS_EXCEPT_NEWLINES_AND_TABS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+function sanitizeString(value: string): string {
+  return value
+    .trim()
+    .replace(CONTROL_CHARS_EXCEPT_NEWLINES_AND_TABS, '')
+    .normalize('NFC');
+}
+
+function sanitizeInput(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') {
+    return sanitizeString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(item => sanitizeInput(item, seen));
+  }
+
+  if (value && typeof value === 'object') {
+    if (seen.has(value)) return value;
+    seen.add(value);
+
+    const record = value as Record<string, unknown>;
+    for (const [key, nestedValue] of Object.entries(record)) {
+      record[key] = sanitizeInput(nestedValue, seen);
+    }
+  }
+
+  return value;
+}
 
 function redactValue(value: any): any {
   if (value === null || value === undefined) return value;
@@ -167,6 +230,15 @@ fastify.decorate('authenticate', async function (request: FastifyRequest, reply:
   }
 });
 
+fastify.addHook('preHandler', async (request) => {
+  if (request.body !== undefined) {
+    request.body = sanitizeInput(request.body);
+  }
+});
+
+// Zod validation runs inside route handlers after this global preHandler, so
+// schemas receive trimmed, control-character-free, NFC-normalized strings.
+
 // Routes
 fastify.get('/api/health', async (request, reply) => {
   const startTime = Date.now();
@@ -208,7 +280,7 @@ fastify.get('/api/health', async (request, reply) => {
   }
 });
 
-fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
   try {
     const d = AuthTokenBody.parse(request.body);
     const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
@@ -224,8 +296,9 @@ fastify.post('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1
 });
 
 // Merchants
-fastify.post('/api/merchants', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
@@ -244,8 +317,10 @@ fastify.post('/api/merchants', {
   }
 });
 
-fastify.get('/api/merchants/:id', async (request, reply) => {
-  const { id } = request.params as { id: string };
+fastify.get<{ Params: MerchantParams }>('/api/merchants/:id', {
+  preValidation: [fastify.authenticate]
+}, async (request, reply) => {
+  const { id } = request.params;
   const merchant = await prisma.merchant.findFirst({
     where: { id, deletedAt: null },
   });
@@ -253,11 +328,11 @@ fastify.get('/api/merchants/:id', async (request, reply) => {
   return merchant;
 });
 
-fastify.delete('/api/merchants/:id', {
+fastify.delete<{ Params: MerchantParams }>('/api/merchants/:id', {
   preValidation: [fastify.authenticate],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  const { id } = request.params as { id: string };
+  const { id } = request.params;
   const merchant = await prisma.merchant.findFirst({
     where: { id, deletedAt: null },
   });
@@ -271,11 +346,11 @@ fastify.delete('/api/merchants/:id', {
   return reply.code(200).send({ success: true });
 });
 
-fastify.post('/api/merchants/:id/restore', {
+fastify.post<{ Params: MerchantParams }>('/api/merchants/:id/restore', {
   preValidation: [fastify.authenticate],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  const { id } = request.params as { id: string };
+  const { id } = request.params;
   const merchant = await prisma.merchant.findUnique({ where: { id } });
   if (!merchant) return reply.code(404).send({ error: 'Merchant not found' });
   if (!merchant.deletedAt) {
@@ -291,8 +366,9 @@ fastify.post('/api/merchants/:id/restore', {
 });
 
 // Payments
-fastify.post('/api/payments', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
@@ -314,16 +390,17 @@ fastify.post('/api/payments', {
   }
 });
 
-fastify.get('/api/payments/:id', async (request, reply) => {
-  const { id } = request.params as { id: string };
+fastify.get<{ Params: PaymentParams }>('/api/payments/:id', async (request, reply) => {
+  const { id } = request.params;
   const payment = await prisma.payment.findUnique({ where: { id } });
   if (!payment) return reply.code(404).send({ error: 'Payment not found' });
   return payment;
 });
 
 // Settlements
-fastify.post('/api/settlements', {
-  preValidation: [fastify.authenticate, logRequestBody],
+fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
+  preValidation: [fastify.authenticate],
+  preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   try {
