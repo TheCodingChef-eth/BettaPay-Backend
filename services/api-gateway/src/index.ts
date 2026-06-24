@@ -308,7 +308,7 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
         id: d.id,
         name: d.name,
         ownerId: d.ownerId || 'unknown',
-        settings: d.settings ? JSON.parse(JSON.stringify(d.settings)) : {},
+        settings: d.settings ?? {},
       }
     });
     return reply.code(201).send({ success: true, merchant });
