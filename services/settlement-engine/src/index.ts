@@ -40,6 +40,8 @@ type SettlementJobData = {
 
 const fastify = Fastify({ 
   logger: true,
+  // Explicitly set body limit to 1MB (Fastify's default)
+  bodyLimit: 1_048_576,
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
