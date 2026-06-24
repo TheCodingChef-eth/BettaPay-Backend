@@ -40,10 +40,21 @@ const connectionParams = {
 
 const settlementQueue = new Queue('settlements', { connection: connectionParams });
 
-const worker = new Worker('settlements', async job => {
-  console.log(`[Settlement Worker] Processing job ${job.id}`);
+new Worker('settlements', async job => {
+  fastify.log.info({
+    jobId: job.id,
+    merchantId: job.data.merchantId,
+    amount: job.data.totalAmount,
+    asset: job.data.asset,
+    jobName: job.name
+  }, 'Processing settlement job');
   // In a real app, this interacts with Soroban
-}, { connection: connectionParams });
+}, {
+  connection: connectionParams,
+  concurrency: 5,
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+});
 
 // In-memory store for development (Gateway uses DB, this worker processes memory queue)
 const settlements: Settlement[] = [];
