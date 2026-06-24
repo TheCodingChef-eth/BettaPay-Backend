@@ -5,7 +5,7 @@
  *
  * Endpoints:
  *   GET  /api/health              — liveness and Redis connectivity probe
- *   GET  /api/settlements         — list all settlements
+ *   GET  /api/settlements         — list settlements (paginated)
  *   POST /api/settlements         — create and process a settlement
  */
 
@@ -18,6 +18,7 @@ import {
   Settlement,
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
+import { PrismaClient } from '@prisma/client';
 
 interface CreateSettlementRouteBody {
   merchantId?: unknown;
@@ -29,15 +30,15 @@ const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3001');
 const startTime = Date.now();
 
-const fastify = Fastify({ 
+const fastify = Fastify({
   logger: true,
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
 });
 
-fastify.register(cors, { 
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
+fastify.register(cors, {
+  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
 });
 
 const redisConnection = new URL(env.REDIS_URL);
@@ -53,8 +54,7 @@ const worker = new Worker('settlements', async job => {
   // In a real app, this interacts with Soroban
 }, { connection: connectionParams });
 
-// In-memory store for development (Gateway uses DB, this worker processes memory queue)
-const settlements: Settlement[] = [];
+const prisma = new PrismaClient();
 
 // Mock function to simulate fetching per-merchant fee rules from governance contract / API gateway
 async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
@@ -64,14 +64,12 @@ async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
 
 fastify.get('/api/health', async (_request, reply) => {
   let redisConnected = false;
-
   try {
     await settlementQueue.getJobCounts();
     redisConnected = true;
   } catch (error) {
     fastify.log.warn({ error }, 'Settlement Redis health check failed');
   }
-
   return reply.code(200).send({
     status: redisConnected ? 'ok' : 'degraded',
     uptime: Math.floor((Date.now() - startTime) / 1000),
@@ -82,7 +80,20 @@ fastify.get('/api/health', async (_request, reply) => {
 });
 
 fastify.get('/api/settlements', async (request, reply) => {
-  return { settlements, total: settlements.length };
+  const { page = '1', limit = '50' } = request.query as { page?: string; limit?: string };
+  const take = Math.min(Number(limit), 100);
+  const skip = (Number(page) - 1) * take;
+
+  const [settlements, total] = await Promise.all([
+    prisma.settlement.findMany({
+      orderBy: { initiatedAt: 'desc' },
+      take,
+      skip,
+    }),
+    prisma.settlement.count(),
+  ]);
+
+  return reply.send({ settlements, total, page: Number(page), limit: take });
 });
 
 fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (request, reply) => {
@@ -91,33 +102,31 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     const gross = parseFloat(d.amount ?? '0');
     if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
 
-    // Fetch dynamic fee rules
     const feeBps = await fetchMerchantFeeBps(d.merchantId);
-    
     const fee = (gross * feeBps) / 10_000;
     const net = gross - fee;
     const initiatedAt = new Date().toISOString();
 
-    const record: Settlement = {
-      id: "set_" + crypto.randomUUID().replace(/-/g, ""),
-      merchantId: d.merchantId,
-      totalAmount: d.amount,
-      asset: d.asset,
-      initiatedAt,
-      completedAt: initiatedAt,
-      status: "completed",
-      metadata: {
-        grossAmount: gross.toFixed(2),
-        feeAmount: fee.toFixed(2),
-        netAmount: net.toFixed(2),
-        feeBps,
-        contractRef: env.SETTLEMENT_CONTRACT_ID,
+    const record = await prisma.settlement.create({
+      data: {
+        id: "set_" + crypto.randomUUID().replace(/-/g, ""),
+        merchantId: d.merchantId,
+        totalAmount: d.amount,
+        asset: d.asset,
+        initiatedAt,
+        completedAt: initiatedAt,
+        status: "completed",
+        metadata: {
+          grossAmount: gross.toFixed(2),
+          feeAmount: fee.toFixed(2),
+          netAmount: net.toFixed(2),
+          feeBps,
+          contractRef: env.SETTLEMENT_CONTRACT_ID,
+        },
       },
-    };
+    });
 
-    settlements.unshift(record);
     await settlementQueue.add('process-settlement', record);
-
     return reply.code(201).send(record);
   } catch (error) {
     return reply.code(400).send({ error: 'Invalid request payload' });
@@ -132,4 +141,11 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect();
+  await fastify.close();
+  process.exit(0);
+});
+
 start();
