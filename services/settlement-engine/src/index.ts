@@ -55,58 +55,26 @@ const connectionParams = {
   port: parseInt(redisConnection.port || '6379', 10),
 };
 
-const settlementQueue = new Queue<SettlementJobData>('settlements', { connection: connectionParams });
+const settlementQueue = new Queue('settlements', { connection: connectionParams });
 
-const worker = new Worker<SettlementJobData>(
-  'settlements',
-  async job => {
-    const { id, merchantId, grossAmount, asset } = job.data;
-    fastify.log.info(`[Settlement Worker] Processing settlement ${id} for merchant ${merchantId}`);
+new Worker('settlements', async job => {
+  fastify.log.info({
+    jobId: job.id,
+    merchantId: job.data.merchantId,
+    amount: job.data.totalAmount,
+    asset: job.data.asset,
+    jobName: job.name
+  }, 'Processing settlement job');
+  // In a real app, this interacts with Soroban
+}, {
+  connection: connectionParams,
+  concurrency: 5,
+  removeOnComplete: { count: 1000 },
+  removeOnFail: { count: 5000 },
+});
 
-    await prisma.settlement.update({
-      where: { id },
-      data: { status: 'processing' },
-    });
-
-    try {
-      await simulateSorobanSettlement(merchantId, grossAmount, asset);
-      const completedAt = new Date();
-
-      await prisma.settlement.update({
-        where: { id },
-        data: {
-          status: 'completed',
-          completedAt,
-        },
-      });
-
-      fastify.log.info(`[Settlement Worker] Completed settlement ${id}`);
-    } catch (error) {
-      fastify.log.error(
-        `[Settlement Worker] Failed settlement ${id}: ${error instanceof Error ? error.message : String(error)}`
-      );
-      await prisma.settlement.update({
-        where: { id },
-        data: { status: 'failed' },
-      }).catch(() => null);
-      throw error;
-    }
-  },
-  { connection: connectionParams, concurrency: 1 }
-);
-
-async function simulateSorobanSettlement(
-  merchantId: string,
-  grossAmount: string,
-  asset: string
-) {
-  const delayMs = Number(process.env.SETTLEMENT_SIMULATION_DELAY_MS ?? 1000);
-  await new Promise((resolve) => setTimeout(resolve, delayMs));
-
-  fastify.log.debug(
-    `Simulated Soroban settlement for merchant=${merchantId}, amount=${grossAmount}, asset=${asset}`
-  );
-}
+// In-memory store for development (Gateway uses DB, this worker processes memory queue)
+const settlements: Settlement[] = [];
 
 // Reads a merchant's fee rule (basis points) from Merchant.settings JSON. Falls
 // back to the configurable default when the merchant is missing or has no rule.
