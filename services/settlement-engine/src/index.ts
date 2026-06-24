@@ -12,6 +12,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
+import Redis from 'ioredis';
 import { PrismaClient } from '@prisma/client/runtime/client';
 import {
   validateEnv,
@@ -45,6 +46,12 @@ const fastify = Fastify({
   genReqId: function (req) {
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
+});
+
+const redis = new Redis(env.REDIS_URL);
+
+fastify.addHook('onClose', async () => {
+  await redis.quit();
 });
 
 fastify.register(cors, { 
@@ -119,6 +126,21 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     const gross = parseFloat(d.amount ?? '0');
     if (gross <= 0) return reply.code(400).send({ error: 'amount must be > 0' });
 
+    const rawIdempotencyKey = request.headers['idempotency-key'];
+    const idempotencyKey = Array.isArray(rawIdempotencyKey) ? rawIdempotencyKey[0] : rawIdempotencyKey;
+
+    if (idempotencyKey) {
+      const existingSettlementId = await redis.get(`idempotency:${idempotencyKey}`);
+      if (existingSettlementId) {
+        const existingSettlement = await prisma.settlement.findUnique({
+          where: { id: existingSettlementId },
+        });
+        if (existingSettlement) {
+          return reply.code(200).send(existingSettlement);
+        }
+      }
+    }
+
     const settlement = await prisma.settlement.create({
       data: {
         id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
@@ -140,6 +162,11 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
       attempts: 3,
       backoff: { type: 'exponential', delay: 1000 },
     });
+
+    if (idempotencyKey) {
+      // 24-hour TTL (24 * 60 * 60 = 86400 seconds)
+      await redis.set(`idempotency:${idempotencyKey}`, settlement.id, 'EX', 86400);
+    }
 
     return reply.code(201).send(settlement);
   } catch (error) {
