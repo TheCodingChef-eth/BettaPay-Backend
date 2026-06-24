@@ -417,14 +417,63 @@ fastify.post<{ Params: MerchantParams }>('/api/merchants/:id/restore', {
   return reply.code(200).send({ success: true, merchant: restored });
 });
 
+// Idempotency-Key header validation: optional, 1–255 characters, no control chars.
+const IDEMPOTENCY_KEY_MAX_LEN = 255;
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function readIdempotencyKey(request: FastifyRequest): string | null {
+  const raw = request.headers['idempotency-key'];
+  if (!raw) return null;
+  const key = Array.isArray(raw) ? raw[0] : raw;
+  return key.trim() || null;
+}
+
 // Payments
 fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
   preValidation: [fastify.authenticate],
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
 }, async (request, reply) => {
+  // ── 1. Parse and validate request body ──────────────────────────────────────
+  let d: ReturnType<typeof CreatePaymentBody.parse>;
   try {
-    const d = CreatePaymentBody.parse(request.body);
+    d = CreatePaymentBody.parse(request.body);
+  } catch {
+    return reply.code(400).send({ error: 'Invalid request payload' });
+  }
+
+  // ── 2. Read and validate optional Idempotency-Key header ────────────────────
+  const idempotencyKey = readIdempotencyKey(request);
+
+  if (idempotencyKey !== null && idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LEN) {
+    return reply.code(400).send({ error: 'Idempotency-Key must not exceed 255 characters' });
+  }
+
+  // ── 3. Idempotency check: look for a non-expired record with the same key ───
+  if (idempotencyKey !== null) {
+    const now = new Date();
+    const existing = await prisma.payment.findFirst({
+      where: {
+        idempotencyKey,
+        idempotencyKeyExpiresAt: { gt: now },
+      },
+    });
+
+    if (existing) {
+      request.log.info(
+        { idempotencyKey, paymentId: existing.id },
+        'Idempotency hit — returning cached payment'
+      );
+      return reply.code(200).send(existing);
+    }
+  }
+
+  // ── 4. Create the payment (with idempotency fields when a key was supplied) ──
+  const idempotencyKeyExpiresAt = idempotencyKey
+    ? new Date(Date.now() + IDEMPOTENCY_TTL_MS)
+    : null;
+
+  try {
     const payment = await prisma.payment.create({
       data: {
         id: 'pay_' + crypto.randomUUID().replace(/-/g, ''),
@@ -434,10 +483,40 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
         asset: d.asset,
         reference: d.reference,
         status: 'initiated',
-      }
+        idempotencyKey: idempotencyKey ?? undefined,
+        idempotencyKeyExpiresAt: idempotencyKeyExpiresAt ?? undefined,
+      },
     });
+
+    request.log.info(
+      { idempotencyKey, paymentId: payment.id },
+      idempotencyKey ? 'Idempotency miss — payment created' : 'Payment created (no idempotency key)'
+    );
+
     return reply.code(201).send(payment);
-  } catch (error) {
+
+  } catch (error: any) {
+    // ── 5. Race-safety: two concurrent requests with the same key may both pass
+    //       the findFirst check. The second create will hit the @unique constraint
+    //       (Prisma error code P2002). Re-fetch the winning row and return 200.
+    if (error?.code === 'P2002' && idempotencyKey !== null) {
+      const existing = await prisma.payment.findFirst({
+        where: {
+          idempotencyKey,
+          idempotencyKeyExpiresAt: { gt: new Date() },
+        },
+      });
+
+      if (existing) {
+        request.log.warn(
+          { idempotencyKey, paymentId: existing.id },
+          'Idempotency race resolved — returning existing payment'
+        );
+        return reply.code(200).send(existing);
+      }
+    }
+
+    request.log.error({ error }, 'Payment creation failed');
     return reply.code(400).send({ error: 'Invalid request payload' });
   }
 });
