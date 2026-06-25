@@ -34,7 +34,8 @@ import {
   UpdatePaymentStatusBody,
   UpdateMerchantSettingsBody,
   createErrorResponse,
-  ErrorCodes
+  ErrorCodes,
+  registerErrorHandler
 } from '@bettapay/validation';
 import { PrismaClient } from '@prisma/client';
 import pg from 'pg';
@@ -129,6 +130,8 @@ const fastify = Fastify({
     return (req.headers['x-request-id'] as string) || crypto.randomUUID();
   }
 });
+
+registerErrorHandler(fastify);
 
 // --- Response logging hooks -------------------------------------------------
 const SENSITIVE_FIELDS = new Set(['token', 'secret', 'secretHash', 'password', 'privateKey', 'secretKey']);
@@ -285,14 +288,7 @@ async function logRequestBody(request: FastifyRequest, reply: FastifyReply) {
   }
 }
 
-// Maps a thrown parse error to the standard 400 envelope. Zod failures carry the
-// issue list in `details`; anything else falls back to a generic invalid request.
-function badRequest(reply: FastifyReply, error: unknown) {
-  if (error instanceof z.ZodError) {
-    return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Validation failed', error.errors));
-  }
-  return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request payload'));
-}
+
 
 // Authentication hook
 fastify.decorate('authenticate', async function (request: FastifyRequest, reply: FastifyReply) {
@@ -355,7 +351,6 @@ fastify.get('/api/health', async (request, reply) => {
 });
 
 fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
-  try {
     const d = AuthTokenBody.parse(request.body);
     const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
     if (!merchant) return reply.code(404).send(createErrorResponse(ErrorCodes.NOT_FOUND, 'Merchant not found'));
@@ -364,9 +359,6 @@ fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLi
     // For this example, we'll just issue a token if the merchant exists.
     const token = fastify.jwt.sign({ merchantId: merchant.id, ownerId: merchant.ownerId });
     return reply.send({ token });
-  } catch (error) {
-    return badRequest(reply, error);
-  }
 });
 
 // Merchants
@@ -375,7 +367,6 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  try {
     const d = CreateMerchantBody.parse(request.body);
     const merchant = await prisma.merchant.create({
       data: {
@@ -386,9 +377,6 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
       }
     });
     return reply.code(201).send({ success: true, merchant });
-  } catch (error) {
-    return badRequest(reply, error);
-  }
 });
 
 fastify.get<{ Params: MerchantParams }>('/api/merchants/:id', {
@@ -447,12 +435,7 @@ fastify.patch<{ Params: MerchantParams; Body: UpdateMerchantSettingsRouteBody }>
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  let d;
-  try {
-    d = UpdateMerchantSettingsBody.parse(request.body);
-  } catch (error) {
-    return badRequest(reply, error);
-  }
+  const d = UpdateMerchantSettingsBody.parse(request.body);
 
   const { id } = request.params;
   const merchant = await prisma.merchant.findFirst({ where: { id, deletedAt: null } });
@@ -476,12 +459,7 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
 }, async (request, reply) => {
   // ── 1. Parse and validate request body ──────────────────────────────────────
-  let d: ReturnType<typeof CreatePaymentBody.parse>;
-  try {
-    d = CreatePaymentBody.parse(request.body);
-  } catch {
-    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request payload'));
-  }
+  const d = CreatePaymentBody.parse(request.body);
 
   // ── 2. Read and validate optional Idempotency-Key header ────────────────────
   const idempotencyKey = readIdempotencyKey(request);
@@ -514,7 +492,6 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
     ? new Date(Date.now() + IDEMPOTENCY_TTL_MS)
     : null;
 
-  try {
     const payment = await prisma.payment.create({
       data: {
         id: 'pay_' + crypto.randomUUID().replace(/-/g, ''),
@@ -535,9 +512,6 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
     );
 
     return reply.code(201).send(payment);
-  } catch (error) {
-    return badRequest(reply, error);
-  }
 });
 
 fastify.get<{ Params: PaymentParams }>('/api/payments/:id', async (request, reply) => {
@@ -554,12 +528,7 @@ fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/a
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 300, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  let d: UpdatePaymentStatusBody;
-  try {
-    d = UpdatePaymentStatusBody.parse(request.body);
-  } catch (error) {
-    return badRequest(reply, error);
-  }
+  const d = UpdatePaymentStatusBody.parse(request.body);
 
   const { id } = request.params;
   const payment = await prisma.payment.findUnique({ where: { id } });
@@ -612,7 +581,6 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
-  try {
     const d = CreateSettlementBody.parse(request.body);
     const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
     const settings = merchant?.settings as { webhookUrl?: string } | null | undefined;
@@ -629,9 +597,6 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
       }
     });
     return reply.code(201).send(settlement);
-  } catch (error) {
-    return badRequest(reply, error);
-  }
 });
 
 fastify.get('/api/deployments', async (request, reply) => {

@@ -12,7 +12,8 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
-import { validateEnv, createErrorResponse, ErrorCodes } from '@bettapay/validation';
+import { validateEnv, registerErrorHandler, createErrorResponse, ErrorCodes } from '@bettapay/validation';
+
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3002');
 
@@ -20,6 +21,7 @@ const fastify = Fastify({ logger: true });
 fastify.register(cors, { 
   origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
 });
+registerErrorHandler(fastify);
 
 const rates: Record<string, number> = {
   USDC: 1545.50,
@@ -38,7 +40,6 @@ const QuoteQuerySchema = z.object({
 });
 
 fastify.get('/api/quote', async (request, reply) => {
-  try {
     const query = QuoteQuerySchema.parse(request.query);
     const from   = query.from;
     const to     = query.to;
@@ -59,12 +60,6 @@ fastify.get('/api/quote', async (request, reply) => {
       slippageLimit: '0.005',
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Invalid query parameters', error.errors));
-    }
-    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request'));
-  }
 });
 
 const start = async () => {

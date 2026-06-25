@@ -31,8 +31,9 @@ import { computeSettlementAmounts } from './settlement-amounts.js';
 import {
   validateEnv,
   CreateSettlementBody,
+  registerErrorHandler,
   createErrorResponse,
-  ErrorCodes,
+  ErrorCodes
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
@@ -76,6 +77,7 @@ fastify.register(cors, {
 });
 
 fastify.register(helmet, { contentSecurityPolicy: false });
+registerErrorHandler(fastify);
 
 const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
@@ -457,7 +459,6 @@ fastify.get<{ Querystring: ReconcileQuery }>('/api/settlements/reconcile', async
 });
 
 fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (request, reply) => {
-  try {
     const d = CreateSettlementBody.parse(request.body);
 
     // Validate that the amount is positive without floating-point conversion
@@ -521,9 +522,6 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     }
 
     return reply.code(201).send(settlement);
-  } catch (error) {
-    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request payload'));
-  }
 });
 
 const start = async () => {
