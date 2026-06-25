@@ -61,6 +61,7 @@ export const settlementSchema = z.object({
   netAmount: z.string(),
   feeBps: z.number(),
   asset: z.string(),
+  batchId: z.string().optional(),
   initiatedAt: isoDateString,
   completedAt: isoDateString.optional(),
   status: z.enum(['pending','processing','completed','failed']),
@@ -186,8 +187,19 @@ export const CreatePaymentBody = z.object({
 
 export const CreateSettlementBody = z.object({
   merchantId: z.string().min(1, 'merchantId is required'),
-  amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
-  asset: z.string().min(1, 'asset is required'),
+  amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string').optional(),
+  asset: z.string().min(1, 'asset is required').optional(),
+  items: z.array(z.object({
+    amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a numeric string'),
+    asset: z.string().min(1, 'asset is required'),
+  })).optional(),
+}).refine((data) => {
+  // Either single amount/asset OR items array must be provided, not both
+  const hasSingleAsset = data.amount && data.asset;
+  const hasItems = data.items && data.items.length > 0;
+  return (hasSingleAsset && !hasItems) || (!hasSingleAsset && hasItems);
+}, {
+  message: 'Provide either amount/asset OR items array, not both',
 });
 
 export const AuthTokenBody = z.object({
@@ -207,6 +219,9 @@ export const UpdatePaymentStatusBody = z.object({
 export const UpdateMerchantSettingsBody = z.object({
   feeBps: z.number().int().min(0).max(10000).optional(),
   tier: z.string().optional(),
+  minSettlementAmount: z.string().regex(/^\d+(\.\d+)?$/, 'minSettlementAmount must be a numeric string').optional(),
+  maxSettlementAmount: z.string().regex(/^\d+(\.\d+)?$/, 'maxSettlementAmount must be a numeric string').optional(),
+  dailySettlementLimit: z.string().regex(/^\d+(\.\d+)?$/, 'dailySettlementLimit must be a numeric string').optional(),
 });
 
 export const PaginationQuery = z.object({

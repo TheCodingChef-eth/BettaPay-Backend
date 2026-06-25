@@ -60,6 +60,7 @@ model Settlement {
   asset       String
   status      SettlementStatus @default(pending)
   webhookUrl  String?
+  batchId     String?
   initiatedAt DateTime         @default(now())
   completedAt DateTime?
 }

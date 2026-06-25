@@ -19,6 +19,7 @@ import { validateEnv, registerErrorHandler, createErrorResponse, ErrorCodes } fr
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3002');
+const startTime = Date.now();
 
 // ── Fallback / seed rates (issue #47) ──────────────────────────────────────
 // Used on first startup before the external API responds, and whenever the
@@ -48,105 +49,15 @@ let cache: RateCache = {
   cachedAt: Date.now(),
 };
 
-// ── Supported currencies (issue #49) ──────────────────────────────────────
-// Derived from the fallback seed; stays stable even when live rates contain
-// unexpected keys, keeping the set of accepted currencies predictable.
-
-export const SUPPORTED_CURRENCIES: string[] = Object.keys(FALLBACK_RATES);
-
-// ── CoinGecko response schema (issue #47) ─────────────────────────────────
-
-const CoinGeckoSchema = z.object({
-  'usd-coin':    z.object({ ngn: z.number() }).optional(),
-  'tether-eurt': z.object({ ngn: z.number() }).optional(),
-});
-
-/**
- * Fetch fresh rates from the configured external API.
- * Returns a new rates object or throws on failure.
- */
-async function fetchRates(): Promise<Record<string, number>> {
-  const response = await fetch(env.RATES_API_URL);
-  if (!response.ok) {
-    throw new Error(`Rates API responded with HTTP ${response.status}`);
-  }
-  const json = await response.json();
-  const parsed = CoinGeckoSchema.parse(json);
-
+fastify.get('/api/health', async (request, reply) => {
   return {
-    USDC: parsed['usd-coin']?.ngn    ?? FALLBACK_RATES.USDC,
-    EURT: parsed['tether-eurt']?.ngn ?? FALLBACK_RATES.EURT,
-    NGN:  1.0,
-  };
-}
-
-/**
- * Refresh the cache only when the TTL has expired (issue #48).
- * On failure, logs the error and keeps the last-known-good rates.
- */
-async function refreshRatesIfStale(): Promise<void> {
-  const ageMs = Date.now() - cache.cachedAt;
-  if (ageMs < env.RATES_CACHE_TTL_MS) {
-    return; // still fresh
-  }
-
-  try {
-    const fresh = await fetchRates();
-    cache = { rates: fresh, cachedAt: Date.now() };
-    console.info('[fx-engine] rates refreshed from external API');
-  } catch (err) {
-    console.error('[fx-engine] rate refresh failed — keeping last known rates:', err);
-  }
-}
-
-// Kick off a background polling loop at startup (issue #47).
-setInterval(refreshRatesIfStale, env.RATES_REFRESH_INTERVAL_MS);
-// Also attempt an immediate first fetch so the service starts with live rates.
-refreshRatesIfStale().catch(() => {});
-
-// ── Fastify setup ──────────────────────────────────────────────────────────
-
-const fastify = Fastify({ logger: true });
-
-// CORS
-fastify.register(cors, {
-  origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()),
-});
-
-// Rate limiting — global 1000 req/min, stricter on /api/quote (issue #50)
-fastify.register(rateLimit, {
-  global:     true,
-  max:        1000,
-  timeWindow: 60 * 1000,
-  errorResponseBuilder: (_req, context) => ({
-    error: {
-      code:    'RATE_LIMIT_EXCEEDED',
-      message: `Too many requests — rate limit is ${context.max} requests per ${context.after}`,
-    },
-  }),
-});
-
-registerErrorHandler(fastify);
-
-// ── GET /api/rates (issues #47 & #48) ────────────────────────────────────
-
-fastify.get('/api/rates', async (_request, _reply) => {
-  return {
-    rates:     cache.rates,
-    cachedAt:  new Date(cache.cachedAt).toISOString(),
-    ttlMs:     env.RATES_CACHE_TTL_MS,
-    updatedAt: new Date(cache.cachedAt).toISOString(),
+    status: 'ok',
+    uptime: Math.floor((Date.now() - startTime) / 1000),
   };
 });
 
-// ── GET /api/currencies (issue #49) ───────────────────────────────────────
-
-fastify.get('/api/currencies', async (_request, _reply) => {
-  const currencies = SUPPORTED_CURRENCIES.map(code => ({
-    code,
-    displayName: CURRENCY_DISPLAY_NAMES[code] ?? code,
-  }));
-  return { currencies };
+fastify.get('/api/rates', async (request, reply) => {
+  return { rates, updatedAt: new Date().toISOString() };
 });
 
 // ── GET /api/quote (issues #48 & #49) ────────────────────────────────────
@@ -211,6 +122,27 @@ fastify.get(
 );
 
 // ── Start ──────────────────────────────────────────────────────────────────
+
+// Graceful shutdown
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  fastify.log.info(`Received ${signal}, shutting down gracefully...`);
+
+  try {
+    await fastify.close();
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error(err, 'Error during shutdown');
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 const start = async () => {
   try {

@@ -79,6 +79,7 @@ interface CreateSettlementRouteBody {
   merchantId?: unknown;
   amount?: unknown;
   asset?: unknown;
+  items?: unknown;
 }
 
 interface UpdateMerchantSettingsRouteBody {
@@ -98,6 +99,16 @@ const PAYMENT_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
   failed: [],
   cancelled: [],
 };
+
+const IDEMPOTENCY_KEY_MAX_LEN = 255;
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function readIdempotencyKey(request: FastifyRequest): string | null {
+  const raw = request.headers['idempotency-key'];
+  if (!raw) return null;
+  const key = Array.isArray(raw) ? raw[0] : raw;
+  return (key as string).trim() || null;
+}
 
 const isProduction = process.env.NODE_ENV === 'production';
 
@@ -583,20 +594,115 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
 }, async (request, reply) => {
     const d = CreateSettlementBody.parse(request.body);
     const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
-    const settings = merchant?.settings as { webhookUrl?: string } | null | undefined;
+    
+    if (!merchant) {
+      return reply.code(404).send(createErrorResponse(ErrorCodes.NOT_FOUND, 'Merchant not found'));
+    }
+
+    const settings = merchant.settings as {
+      webhookUrl?: string;
+      minSettlementAmount?: string;
+      maxSettlementAmount?: string;
+      dailySettlementLimit?: string;
+    } | null | undefined;
+
     const webhookUrl = settings?.webhookUrl || null;
 
-    const settlement = await prisma.settlement.create({
-      data: {
-        id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
-        merchantId: d.merchantId,
-        totalAmount: d.amount,
-        asset: d.asset,
-        status: 'pending',
-        webhookUrl,
+    // Normalize to items array (backward compatibility: single amount/asset becomes single-item batch)
+    const items = d.items || (d.amount && d.asset ? [{ amount: d.amount, asset: d.asset }] : []);
+
+    // Validate each settlement item against merchant limits
+    for (const item of items) {
+      const amount = parseFloat(item.amount);
+
+      // Check minimum settlement amount
+      if (settings?.minSettlementAmount) {
+        const minAmount = parseFloat(settings.minSettlementAmount);
+        if (amount < minAmount) {
+          return reply.code(422).send(createErrorResponse(
+            ErrorCodes.VALIDATION_ERROR,
+            `Settlement amount ${item.amount} is below minimum ${settings.minSettlementAmount}`,
+            { amount: item.amount, minSettlementAmount: settings.minSettlementAmount }
+          ));
+        }
       }
-    });
-    return reply.code(201).send(settlement);
+
+      // Check maximum settlement amount
+      if (settings?.maxSettlementAmount) {
+        const maxAmount = parseFloat(settings.maxSettlementAmount);
+        if (amount > maxAmount) {
+          return reply.code(422).send(createErrorResponse(
+            ErrorCodes.VALIDATION_ERROR,
+            `Settlement amount ${item.amount} exceeds maximum ${settings.maxSettlementAmount}`,
+            { amount: item.amount, maxSettlementAmount: settings.maxSettlementAmount }
+          ));
+        }
+      }
+    }
+
+    // Check daily settlement limit (aggregate all assets)
+    if (settings?.dailySettlementLimit) {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const todayTotal = await prisma.settlement.aggregate({
+        _sum: { totalAmount: true },
+        where: {
+          merchantId: d.merchantId,
+          initiatedAt: { gte: todayStart },
+        },
+      });
+
+      const currentDailyTotal = parseFloat(todayTotal._sum.totalAmount || '0');
+      const requestTotal = items.reduce((sum, item) => sum + parseFloat(item.amount), 0);
+      const newDailyTotal = currentDailyTotal + requestTotal;
+      const dailyLimit = parseFloat(settings.dailySettlementLimit);
+
+      if (newDailyTotal > dailyLimit) {
+        return reply.code(422).send(createErrorResponse(
+          ErrorCodes.VALIDATION_ERROR,
+          `Daily settlement limit exceeded. Current: ${currentDailyTotal}, Requested: ${requestTotal}, Limit: ${settings.dailySettlementLimit}`,
+          {
+            currentDailyTotal: currentDailyTotal.toString(),
+            requestedAmount: requestTotal.toString(),
+            dailySettlementLimit: settings.dailySettlementLimit,
+          }
+        ));
+      }
+    }
+
+    // Create settlements (multi-asset batch or single)
+    const batchId = 'batch_' + crypto.randomUUID().replace(/-/g, '');
+    const settlements = await Promise.all(
+      items.map((item) =>
+        prisma.settlement.create({
+          data: {
+            id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
+            merchantId: d.merchantId,
+            totalAmount: item.amount,
+            grossAmount: item.amount,
+            feeAmount: '0',
+            netAmount: item.amount,
+            feeBps: 0,
+            asset: item.asset,
+            status: 'pending',
+            webhookUrl,
+            batchId: items.length > 1 ? batchId : null,
+          },
+        })
+      )
+    );
+
+    // Return single settlement or batch
+    if (settlements.length === 1) {
+      return reply.code(201).send(settlements[0]);
+    } else {
+      return reply.code(201).send({
+        batchId,
+        settlements,
+        total: settlements.length,
+      });
+    }
 });
 
 fastify.get('/api/deployments', async (request, reply) => {
