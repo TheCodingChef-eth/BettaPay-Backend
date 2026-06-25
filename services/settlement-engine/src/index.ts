@@ -29,6 +29,10 @@ import { PrismaClient } from '@prisma/client/runtime/client';
 import {
   validateEnv,
   CreateSettlementBody,
+  registerErrorHandler,
+  createErrorResponse,
+  ErrorCodes,
+  PaginationQuery
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
 
@@ -127,11 +131,15 @@ fastify.get('/api/health', async (_request, reply) => {
   });
 });
 
-fastify.get('/api/settlements', async (_request, reply) => {
+fastify.get('/api/settlements', async (request, reply) => {
+  const { limit, offset } = PaginationQuery.parse(request.query ?? {});
   const records = await prisma.settlement.findMany({
+    take: limit,
+    skip: offset,
     orderBy: { initiatedAt: 'desc' },
   });
-  return { settlements: records, total: records.length };
+  const total = await prisma.settlement.count();
+  return { settlements: records, total };
 });
 
 fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (request, reply) => {
