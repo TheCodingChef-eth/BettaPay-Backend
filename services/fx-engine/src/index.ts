@@ -12,8 +12,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { z } from 'zod';
-import { validateEnv } from '@bettapay/validation';
-
+import { validateEnv, createErrorResponse, ErrorCodes } from '@bettapay/validation';
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3002');
 
@@ -44,9 +43,8 @@ fastify.get('/api/quote', async (request, reply) => {
     const from   = query.from;
     const to     = query.to;
     const amount = parseFloat(query.amount);
-
     if (!rates[from] || !rates[to]) {
-      return reply.code(400).send({ error: 'Unsupported currency pair' });
+      return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Unsupported currency pair'));
     }
 
     const amountInNgn  = amount * rates[from];
@@ -63,9 +61,9 @@ fastify.get('/api/quote', async (request, reply) => {
     };
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply.code(400).send({ error: 'Invalid query parameters', details: error.errors });
+      return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Invalid query parameters', error.errors));
     }
-    return reply.code(400).send({ error: 'Invalid request' });
+    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request'));
   }
 });
 

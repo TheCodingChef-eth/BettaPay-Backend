@@ -29,6 +29,8 @@ import { PrismaClient } from '@prisma/client/runtime/client';
 import {
   validateEnv,
   CreateSettlementBody,
+  createErrorResponse,
+  ErrorCodes,
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
 
@@ -141,7 +143,7 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
     // Validate that the amount is positive without floating-point conversion
     const grossBN = new BigNumber(d.amount ?? '0');
     if (!grossBN.isFinite() || grossBN.isLessThanOrEqualTo(0)) {
-      return reply.code(400).send({ error: 'amount must be > 0' });
+      return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'amount must be > 0'));
     }
 
     const feeBps = await fetchMerchantFeeBps(d.merchantId);
@@ -195,7 +197,7 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', async (req
 
     return reply.code(201).send(settlement);
   } catch (error) {
-    return reply.code(400).send({ error: 'Invalid request payload' });
+    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request payload'));
   }
 });
 

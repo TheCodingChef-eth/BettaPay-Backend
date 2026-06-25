@@ -480,14 +480,14 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
   try {
     d = CreatePaymentBody.parse(request.body);
   } catch {
-    return reply.code(400).send({ error: 'Invalid request payload' });
+    return reply.code(400).send(createErrorResponse(ErrorCodes.INVALID_REQUEST, 'Invalid request payload'));
   }
 
   // ── 2. Read and validate optional Idempotency-Key header ────────────────────
   const idempotencyKey = readIdempotencyKey(request);
 
   if (idempotencyKey !== null && idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LEN) {
-    return reply.code(400).send({ error: 'Idempotency-Key must not exceed 255 characters' });
+    return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Idempotency-Key must not exceed 255 characters'));
   }
 
   // ── 3. Idempotency check: look for a non-expired record with the same key ───
@@ -567,11 +567,10 @@ fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/a
 
   const allowed = PAYMENT_STATUS_TRANSITIONS[payment.status] ?? [];
   if (!allowed.includes(d.status)) {
-    return reply.code(422).send({
-      error: 'Invalid status transition',
+    return reply.code(422).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Invalid status transition', {
       from: payment.status,
       to: d.status,
-    });
+    }));
   }
 
   const updated = await prisma.payment.update({
