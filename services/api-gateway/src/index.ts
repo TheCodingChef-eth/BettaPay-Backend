@@ -465,7 +465,7 @@ fastify.post<{ Body: CreatePaymentRouteBody }>('/api/payments', {
   const idempotencyKey = readIdempotencyKey(request);
 
   if (idempotencyKey !== null && idempotencyKey.length > IDEMPOTENCY_KEY_MAX_LEN) {
-    return reply.code(400).send({ error: 'Idempotency-Key must not exceed 255 characters' });
+    return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Idempotency-Key must not exceed 255 characters'));
   }
 
   // ── 3. Idempotency check: look for a non-expired record with the same key ───
@@ -536,11 +536,10 @@ fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/a
 
   const allowed = PAYMENT_STATUS_TRANSITIONS[payment.status] ?? [];
   if (!allowed.includes(d.status)) {
-    return reply.code(422).send({
-      error: 'Invalid status transition',
+    return reply.code(422).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Invalid status transition', {
       from: payment.status,
       to: d.status,
-    });
+    }));
   }
 
   const updated = await prisma.payment.update({
@@ -551,12 +550,42 @@ fastify.patch<{ Params: PaymentParams; Body: UpdatePaymentStatusRouteBody }>('/a
 });
 
 // Settlements
+fastify.get('/api/settlements', {
+  preValidation: [fastify.authenticate],
+  config: { rateLimit: { max: 100, timeWindow: '1 minute' } }
+}, async (request, reply) => {
+  const { merchantId, from, to } = request.query as { merchantId?: string; from?: string; to?: string };
+  const where: any = {};
+  if (merchantId) {
+    where.merchantId = merchantId;
+  }
+  if (from || to) {
+    where.initiatedAt = {};
+    if (from) {
+      where.initiatedAt.gte = new Date(from);
+    }
+    if (to) {
+      where.initiatedAt.lte = new Date(to);
+    }
+  }
+
+  const records = await prisma.settlement.findMany({
+    where,
+    orderBy: { initiatedAt: 'desc' },
+  });
+  return { settlements: records, total: records.length };
+});
+
 fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
   preValidation: [fastify.authenticate],
   preHandler: [logRequestBody],
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
     const d = CreateSettlementBody.parse(request.body);
+    const merchant = await prisma.merchant.findUnique({ where: { id: d.merchantId } });
+    const settings = merchant?.settings as { webhookUrl?: string } | null | undefined;
+    const webhookUrl = settings?.webhookUrl || null;
+
     const settlement = await prisma.settlement.create({
       data: {
         id: 'set_' + crypto.randomUUID().replace(/-/g, ''),
@@ -564,6 +593,7 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
         totalAmount: d.amount,
         asset: d.asset,
         status: 'pending',
+        webhookUrl,
       }
     });
     return reply.code(201).send(settlement);

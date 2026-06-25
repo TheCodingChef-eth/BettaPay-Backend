@@ -44,7 +44,6 @@ fastify.get('/api/quote', async (request, reply) => {
     const from   = query.from;
     const to     = query.to;
     const amount = parseFloat(query.amount);
-
     if (!rates[from] || !rates[to]) {
       return reply.code(400).send(createErrorResponse(ErrorCodes.VALIDATION_ERROR, 'Unsupported currency pair'));
     }
