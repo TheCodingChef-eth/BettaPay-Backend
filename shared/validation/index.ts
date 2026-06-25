@@ -71,6 +71,13 @@ export const EnvSchema = z.object({
   FX_ENGINE_URL: z.string().url().default('http://localhost:3002'),
   SETTLEMENT_ENGINE_URL: z.string().url().default('http://localhost:3001'),
   INDEXER_URL: z.string().url().default('http://localhost:3003'),
+
+  // FX Engine — live rate fetching and caching
+  RATES_API_URL: z.string().url().default(
+    'https://api.coingecko.com/api/v3/simple/price?ids=usd-coin,tether-eurt&vs_currencies=ngn'
+  ),
+  RATES_REFRESH_INTERVAL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
+  RATES_CACHE_TTL_MS: z.string().transform((s) => parseInt(s, 10)).default('60000'),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
