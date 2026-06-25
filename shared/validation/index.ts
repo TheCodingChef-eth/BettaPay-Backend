@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export * from './schemas.js';
+export * from './plugins.js';
 import "dotenv/config";
 
 // ─── Standard error response envelope ─────────────────────────────────────────
@@ -13,6 +14,7 @@ export const ErrorCodes = {
   VALIDATION_ERROR: 'VALIDATION_ERROR',
   INVALID_REQUEST: 'INVALID_REQUEST',
   REQUEST_TIMEOUT: 'REQUEST_TIMEOUT',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

@@ -13,7 +13,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import crypto from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
-import { validateEnv } from '@bettapay/validation';
+import { validateEnv, registerErrorHandler } from '@bettapay/validation';
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3003');
@@ -23,6 +23,7 @@ const fastify = Fastify({ logger: true });
 fastify.register(cors, { 
   origin: env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) 
 });
+registerErrorHandler(fastify);
 
 // In-memory event ring buffer (50 events max)
 const events: any[] = [];
