@@ -16,6 +16,7 @@ import { validateEnv, registerErrorHandler, createErrorResponse, ErrorCodes } fr
 
 const env = validateEnv(process.env);
 const PORT = Number(process.env.PORT ?? '3002');
+const startTime = Date.now();
 
 const fastify = Fastify({ logger: true });
 fastify.register(cors, { 
@@ -28,6 +29,13 @@ const rates: Record<string, number> = {
   EURT: 1680.20,
   NGN: 1.0,
 };
+
+fastify.get('/api/health', async (request, reply) => {
+  return {
+    status: 'ok',
+    uptime: Math.floor((Date.now() - startTime) / 1000),
+  };
+});
 
 fastify.get('/api/rates', async (request, reply) => {
   return { rates, updatedAt: new Date().toISOString() };
@@ -61,6 +69,27 @@ fastify.get('/api/quote', async (request, reply) => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     };
 });
+
+// Graceful shutdown
+let shuttingDown = false;
+
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  fastify.log.info(`Received ${signal}, shutting down gracefully...`);
+
+  try {
+    await fastify.close();
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error(err, 'Error during shutdown');
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 const start = async () => {
   try {
