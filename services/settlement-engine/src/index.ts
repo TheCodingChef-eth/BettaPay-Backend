@@ -5,7 +5,7 @@
  *
  * Endpoints:
  *   GET  /api/health              — liveness and Redis connectivity probe
- *   GET  /api/settlements         — list all settlements
+ *   GET  /api/settlements         — list settlements (paginated)
  *   POST /api/settlements         — create and process a settlement
  *
  * Precision strategy
@@ -31,6 +31,7 @@ import {
   CreateSettlementBody,
 } from "@bettapay/validation";
 import { Queue, Worker } from 'bullmq';
+import { PrismaClient } from '@prisma/client';
 
 interface CreateSettlementRouteBody {
   merchantId?: unknown;
@@ -96,8 +97,7 @@ new Worker('settlements', async job => {
   removeOnFail: { count: 5000 },
 });
 
-// In-memory store for development (Gateway uses DB, this worker processes memory queue)
-const settlements: Settlement[] = [];
+const prisma = new PrismaClient();
 
 // Reads a merchant's fee rule (basis points) from Merchant.settings JSON. Falls
 // back to the configurable default when the merchant is missing or has no rule.
@@ -110,14 +110,12 @@ async function fetchMerchantFeeBps(merchantId: string): Promise<number> {
 
 fastify.get('/api/health', async (_request, reply) => {
   let redisConnected = false;
-
   try {
     await settlementQueue.getJobCounts();
     redisConnected = true;
   } catch (error) {
     fastify.log.warn({ error }, 'Settlement Redis health check failed');
   }
-
   return reply.code(200).send({
     status: redisConnected ? 'ok' : 'degraded',
     uptime: Math.floor((Date.now() - startTime) / 1000),
@@ -207,4 +205,11 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect();
+  await fastify.close();
+  process.exit(0);
+});
+
 start();
