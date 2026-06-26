@@ -267,7 +267,8 @@ fastify.get('/api/settlements', async (request, reply) => {
     orderBy: { initiatedAt: 'desc' },
   });
   const total = await prisma.settlement.count({ where });
-  return { settlements: records, total };
+  const hasMore = offset + limit < total;
+  return { settlements: records, total, limit, offset, hasMore };
 });
 
 interface ReconcileQuery {

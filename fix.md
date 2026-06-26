@@ -1,23 +1,18 @@
-#42 Add settlement filtering by status and date range
+#41 Add settlement listing with pagination
 Repo Avatar
 Betta-Pay/BettaPay-Backend
-Description: The settlement listing endpoint has no filtering capability. Operators must fetch all settlements and filter client-side.
+Description: The GET /api/settlements endpoint returns all settlements with no pagination. As the dataset grows, this will become slow and return massive responses.
 
 Requirements:
 
-Accept optional status query parameter (pending, processing, completed, failed)
-Accept optional from and to date range parameters (ISO 8601)
-Apply filters server-side in the Prisma query
-Validate all query parameters with Zod
+Accept limit and offset query parameters via Zod validation
+Default to limit=50, max limit=200
+Return pagination metadata: { total, limit, offset, hasMore }
+Order by createdAt descending
 Suggested execution steps:
 
-Extend the settlement list query schema with optional status, from, to
-Build a Prisma where clause dynamically based on provided filters
-Parse date strings and validate them
-Apply initiatedAt: { gte: from, lte: to } for date range filtering
-Example commit message:
-
-feat(settlement-engine): add status and date range filters to settlement list
-
-GET /api/settlements now supports ?status=&from=&to= query params,
-applying filters server-side for efficient data retrieval.
+Create a PaginationQuery schema in @bettapay/validation
+Parse query params with the schema
+Query with prisma.settlement.findMany({ take: limit, skip: offset, orderBy: { initiatedAt: 'desc' } })
+Count total matching records
+Return paginated response with metadata
