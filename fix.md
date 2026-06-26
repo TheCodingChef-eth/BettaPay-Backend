@@ -1,18 +1,18 @@
-#41 Add settlement listing with pagination
+Add BullMQ job retry configuration
 Repo Avatar
 Betta-Pay/BettaPay-Backend
-Description: The GET /api/settlements endpoint returns all settlements with no pagination. As the dataset grows, this will become slow and return massive responses.
+Description: The BullMQ worker is created without explicit retry configuration. Failed jobs are lost or retried with default settings that may not be appropriate for financial operations.
 
 Requirements:
 
-Accept limit and offset query parameters via Zod validation
-Default to limit=50, max limit=200
-Return pagination metadata: { total, limit, offset, hasMore }
-Order by createdAt descending
+Configure worker with attempts: 3
+Use exponential backoff: { type: 'exponential', delay: 2000 }
+Set a maximum backoff of 30 seconds
+Log each retry attempt with attempt number
+Move jobs to a dead-letter queue after all retries are exhausted
 Suggested execution steps:
 
-Create a PaginationQuery schema in @bettapay/validation
-Parse query params with the schema
-Query with prisma.settlement.findMany({ take: limit, skip: offset, orderBy: { initiatedAt: 'desc' } })
-Count total matching records
-Return paginated response with metadata
+Add attempts: 3 and backoff: { type: 'exponential', delay: 2000 } to worker options
+In the worker handler, inspect job.attemptsMade for logging
+Create a dead-letter queue for permanently failed jobs
+On final failure, move job data to the DLQ

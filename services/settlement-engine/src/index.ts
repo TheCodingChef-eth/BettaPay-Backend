@@ -154,10 +154,20 @@ async function sendWebhookWithRetries(url: string, payload: any, maxRetries = 3,
 }
 
 const settlementQueue = new Queue('settlements', { connection: connectionParams });
+const settlementDLQ = new Queue('settlements-dlq', { connection: connectionParams });
 
-new Worker('settlements', async job => {
+const worker = new Worker('settlements', async job => {
   const settlementId = job.data.id;
   
+  if (job.attemptsMade > 0) {
+    fastify.log.warn({
+      jobId: job.id,
+      attempt: job.attemptsMade + 1,
+      maxAttempts: 3,
+      settlementId,
+    }, 'Retrying settlement job');
+  }
+
   fastify.log.info({
     jobId: job.id,
     merchantId: job.data.merchantId,
@@ -230,8 +240,26 @@ new Worker('settlements', async job => {
 }, {
   connection: connectionParams,
   concurrency: 5,
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 2000 },
   removeOnComplete: { count: 1000 },
   removeOnFail: { count: 5000 },
+});
+
+worker.on('failed', async (job, err) => {
+  if (job) {
+    fastify.log.error({
+      jobId: job.id,
+      settlementId: job.data.id,
+      attempt: job.attemptsMade,
+      error: err.message,
+    }, 'Job failed after all retries, moving to DLQ');
+
+    await settlementDLQ.add(job.name, job.data, {
+      jobId: job.id,
+      attempts: 1,
+    });
+  }
 });
 
 fastify.get('/api/health', async (_request, reply) => {
@@ -548,10 +576,7 @@ fastify.post<{ Body: CreateSettlementRouteBody }>(
       asset: settlement.asset,
     };
 
-    await settlementQueue.add('process-settlement', jobData, {
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1000 },
-    });
+    await settlementQueue.add('process-settlement', jobData);
 
     if (idempotencyKey) {
       // 24-hour TTL (24 * 60 * 60 = 86400 seconds)
