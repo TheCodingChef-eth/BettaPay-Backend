@@ -62,6 +62,7 @@ interface PaymentParams {
 
 interface AuthTokenRouteBody {
   merchantId?: unknown;
+  secret?: unknown;
 }
 
 interface CreateMerchantRouteBody {
@@ -69,6 +70,7 @@ interface CreateMerchantRouteBody {
   name?: unknown;
   ownerId?: unknown;
   settings?: unknown;
+  secret?: unknown;
 }
 
 interface CreatePaymentRouteBody {
@@ -257,6 +259,10 @@ fastify.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
+function hashSecret(secret: string): string {
+  return crypto.createHash('sha256').update(secret).digest('hex');
+}
+
 const pool = new pg.Pool({ connectionString: env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter, log: getPrismaLogLevels() });
@@ -372,10 +378,17 @@ fastify.get('/api/health', async (request, reply) => {
 fastify.post<{ Body: AuthTokenRouteBody }>('/api/auth/token', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const d = AuthTokenBody.parse(request.body);
     const merchant = await prisma.merchant.findFirst({ where: { id: d.merchantId, deletedAt: null } });
-    if (!merchant) return reply.code(404).send(createErrorResponse(ErrorCodes.NOT_FOUND, 'Merchant not found'));
 
-    // In a real system, you would verify the secret/password here.
-    // For this example, we'll just issue a token if the merchant exists.
+    const storedHash = merchant?.secretHash || '0'.repeat(64);
+    const inputHash = hashSecret(d.secret);
+    const hashBuffer = Buffer.from(storedHash, 'hex');
+    const inputBuffer = Buffer.from(inputHash, 'hex');
+
+    const isValid = merchant && merchant.secretHash && crypto.timingSafeEqual(hashBuffer, inputBuffer);
+    if (!isValid) {
+      return reply.code(401).send({ error: 'Invalid credentials' });
+    }
+
     const token = fastify.jwt.sign({ merchantId: merchant.id, ownerId: merchant.ownerId });
     return reply.send({ token });
 });
@@ -387,15 +400,18 @@ fastify.post<{ Body: CreateMerchantRouteBody }>('/api/merchants', {
   config: { rateLimit: { max: 30, timeWindow: '1 minute' } }
 }, async (request, reply) => {
     const d = CreateMerchantBody.parse(request.body);
+    const secret = d.secret || crypto.randomBytes(24).toString('hex');
+    const secretHash = hashSecret(secret);
     const merchant = await prisma.merchant.create({
       data: {
         id: d.id,
         name: d.name,
         ownerId: d.ownerId || 'unknown',
-        settings: d.settings ?? {},
+        settings: d.settings as any ?? {},
+        secretHash,
       }
     });
-    return reply.code(201).send({ success: true, merchant });
+    return reply.code(201).send({ success: true, merchant, secret });
 });
 
 fastify.get<{ Params: MerchantParams }>('/api/merchants/:id', {
@@ -653,16 +669,18 @@ fastify.post<{ Body: CreateSettlementRouteBody }>('/api/settlements', {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
-      const todayTotal = await prisma.settlement.aggregate({
-        _sum: { totalAmount: true },
+      const todaySettlements = await prisma.settlement.findMany({
         where: {
           merchantId: d.merchantId,
           initiatedAt: { gte: todayStart },
         },
+        select: {
+          totalAmount: true
+        }
       });
 
-      const currentDailyTotal = parseFloat(todayTotal._sum.totalAmount || '0');
-      const requestTotal = items.reduce((sum, item) => sum + parseFloat(item.amount), 0);
+      const currentDailyTotal = todaySettlements.reduce((sum: number, s: { totalAmount: string }) => sum + parseFloat(s.totalAmount), 0);
+      const requestTotal = items.reduce((sum: number, item: any) => sum + parseFloat(item.amount), 0);
       const newDailyTotal = currentDailyTotal + requestTotal;
       const dailyLimit = parseFloat(settings.dailySettlementLimit);
 
@@ -789,14 +807,19 @@ const start = async () => {
     await connectWithRetry(prisma, fastify.log);
 
     // Seed admin merchant
+    const adminSecret = env.ADMIN_SECRET;
+    const adminSecretHash = hashSecret(adminSecret);
     await prisma.merchant.upsert({
       where: { id: env.ADMIN_ADDRESS },
-      update: {},
+      update: {
+        secretHash: adminSecretHash
+      },
       create: {
         id: env.ADMIN_ADDRESS,
         name: 'BettaPay Merchant LLC',
         ownerId: 'admin-user-001',
         settings: { preferredAsset: 'USDC', autoSettle: true },
+        secretHash: adminSecretHash
       }
     });
 

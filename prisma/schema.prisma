@@ -27,6 +27,7 @@ model Merchant {
   createdAt   DateTime     @default(now())
   deletedAt   DateTime?
   settings    Json?
+  secretHash  String?
   payments    Payment[]
   settlements Settlement[]
 }

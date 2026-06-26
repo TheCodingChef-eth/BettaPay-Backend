@@ -81,6 +81,7 @@ export const EnvSchema = z.object({
   SETTLEMENT_CONTRACT_ID: z.string().min(1, 'SETTLEMENT_CONTRACT_ID is required'),
   GOVERNANCE_CONTRACT_ID: z.string().min(1, 'GOVERNANCE_CONTRACT_ID is required'),
   ADMIN_ADDRESS: z.string().min(1, 'ADMIN_ADDRESS is required'),
+  ADMIN_SECRET: z.string().min(1, 'ADMIN_SECRET is required'),
 
   // Service URLs (used by gateway to proxy requests)
   FX_ENGINE_URL: z.string().url().default('http://localhost:3002'),

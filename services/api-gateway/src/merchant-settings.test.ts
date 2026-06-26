@@ -23,7 +23,7 @@ function buildApp(initial: Record<string, unknown> | 'missing') {
   return app;
 }
 
-async function patch(app: ReturnType<typeof buildApp>, payload: unknown) {
+async function patch(app: any, payload: any) {
   return app.inject({ method: 'PATCH', url: '/api/merchants/m1/settings', payload });
 }
 

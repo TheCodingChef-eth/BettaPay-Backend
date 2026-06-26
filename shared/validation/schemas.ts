@@ -175,6 +175,7 @@ export const CreateMerchantBody = z.object({
   name: z.string().min(1, 'name is required'),
   ownerId: z.string().optional(),
   settings: z.record(z.unknown()).optional(),
+  secret: z.string().optional(),
 });
 
 export const CreatePaymentBody = z.object({
