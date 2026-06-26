@@ -99,6 +99,13 @@ const redisConnection = new URL(env.REDIS_URL);
 const connectionParams = {
   host: redisConnection.hostname,
   port: parseInt(redisConnection.port || '6379', 10),
+  maxRetriesPerRequest: 3,
+  retryStrategy: (times: number) => {
+    if (times > 10) return null;
+    const delay = Math.min(times * 1000, 30000);
+    fastify.log.warn({ attempt: times, delay }, 'Redis connection retry');
+    return delay;
+  },
 };
 
 async function sendWebhookWithRetries(url: string, payload: any, maxRetries = 3, initialDelay = 1000): Promise<void> {
@@ -260,6 +267,16 @@ worker.on('failed', async (job, err) => {
       attempts: 1,
     });
   }
+});
+
+settlementQueue.on('error', (err) => {
+  fastify.log.error({ err: err.message }, 'BullMQ queue connection error');
+});
+settlementDLQ.on('error', (err) => {
+  fastify.log.error({ err: err.message }, 'BullMQ DLQ connection error');
+});
+worker.on('error', (err) => {
+  fastify.log.error({ err: err.message }, 'BullMQ worker connection error');
 });
 
 fastify.get('/api/health', async (_request, reply) => {
