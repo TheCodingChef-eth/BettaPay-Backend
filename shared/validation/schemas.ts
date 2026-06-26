@@ -230,6 +230,16 @@ export const PaginationQuery = z.object({
 });
 export type PaginationQuery = z.infer<typeof PaginationQuery>;
 
+export const SettlementListQuery = PaginationQuery.extend({
+  status: z.enum(['pending', 'processing', 'completed', 'failed']).optional(),
+  from: isoDateString.optional(),
+  to: isoDateString.optional(),
+}).refine(
+  (data) => !data.from || !data.to || data.from <= data.to,
+  { message: 'from must be before to' }
+);
+export type SettlementListQuery = z.infer<typeof SettlementListQuery>;
+
 export const DateRangeQuery = z
   .object({
     from: isoDateString.optional(),

@@ -36,7 +36,7 @@ import {
   registerErrorHandler,
   createErrorResponse,
   ErrorCodes,
-  PaginationQuery
+  SettlementListQuery
 } from "@bettapay/validation";
 
 interface CreateSettlementRouteBody {
@@ -252,13 +252,21 @@ fastify.get('/api/health', async (_request, reply) => {
 });
 
 fastify.get('/api/settlements', async (request, reply) => {
-  const { limit, offset } = PaginationQuery.parse(request.query ?? {});
+  const { limit, offset, status, from, to } = SettlementListQuery.parse(request.query ?? {});
+  const where: any = {};
+  if (status) where.status = status;
+  if (from || to) {
+    where.initiatedAt = {};
+    if (from) where.initiatedAt.gte = new Date(from);
+    if (to) where.initiatedAt.lte = new Date(to);
+  }
   const records = await prisma.settlement.findMany({
+    where,
     take: limit,
     skip: offset,
     orderBy: { initiatedAt: 'desc' },
   });
-  const total = await prisma.settlement.count();
+  const total = await prisma.settlement.count({ where });
   return { settlements: records, total };
 });
 
