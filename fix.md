@@ -1,18 +1,17 @@
-Add BullMQ job retry configuration
+Add Redis connection error handling and reconnection
 Repo Avatar
 Betta-Pay/BettaPay-Backend
-Description: The BullMQ worker is created without explicit retry configuration. Failed jobs are lost or retried with default settings that may not be appropriate for financial operations.
+Description: The settlement-engine creates BullMQ connections using parsed Redis URL but has no error handling if Redis is unreachable at startup or disconnects during operation.
 
 Requirements:
 
-Configure worker with attempts: 3
-Use exponential backoff: { type: 'exponential', delay: 2000 }
-Set a maximum backoff of 30 seconds
-Log each retry attempt with attempt number
-Move jobs to a dead-letter queue after all retries are exhausted
+Add error event handlers on the BullMQ Queue and Worker
+On connection failure, log the error and attempt reconnection
+If Redis is unreachable at startup, retry with backoff instead of crashing
+Add a retryStrategy to the Redis connection options
 Suggested execution steps:
 
-Add attempts: 3 and backoff: { type: 'exponential', delay: 2000 } to worker options
-In the worker handler, inspect job.attemptsMade for logging
-Create a dead-letter queue for permanently failed jobs
-On final failure, move job data to the DLQ
+Add connection.on('error', ...) handlers for the queue and worker connections
+Implement a retry strategy with max 10 attempts and exponential backoff
+Log each reconnection attempt
+Add maxRetriesPerRequest: 3 and retryStrategy: (times) => Math.min(times * 1000, 30000) to connection params
