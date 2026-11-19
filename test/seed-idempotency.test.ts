@@ -14,10 +14,11 @@ import test from 'tape';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import crypto from 'node:crypto';
 import pgPkg from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
+import { verifySecret } from '../shared/validation/secret-hash.js';
+import { isEncrypted } from '../shared/validation/encryption.js';
 
 const pg = (pgPkg as any).default || pgPkg;
 
@@ -26,10 +27,6 @@ const SEED_SCRIPT_PATH = fileURLToPath(new URL('../prisma/seed.ts', import.meta.
 
 const TEST_ADMIN_ADDRESS = 'GA_IDEMPOTENCY_TEST_ADMIN_859';
 const TEST_ADMIN_SECRET = 'idempotency-test-admin-secret-859';
-
-function hashSecret(secret: string): string {
-  return crypto.createHash('sha256').update(secret).digest('hex');
-}
 
 function createTestPrismaClient() {
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -159,7 +156,17 @@ test('Prisma seed script: idempotency and row count stability against test datab
     t.ok(adminRecordRun1, 'admin merchant row is present after run 1');
     t.equal(adminRecordRun1?.name, 'BettaPay Merchant LLC');
     t.equal(adminRecordRun1?.ownerId, 'admin-user-001');
-    t.equal(adminRecordRun1?.secretHash, hashSecret(TEST_ADMIN_SECRET));
+    t.ok(
+      verifySecret(TEST_ADMIN_SECRET, adminRecordRun1?.secretHash ?? ''),
+      'seeded secretHash verifies with the production secret helper (#1098)',
+    );
+    t.notOk(
+      /^[0-9a-f]{64}$/.test(adminRecordRun1?.secretHash ?? ''),
+      'seeded secretHash is not an unsalted SHA-256 digest (#1098)',
+    );
+    if (process.env.FIELD_ENCRYPTION_KEY) {
+      t.ok(isEncrypted(adminRecordRun1?.secretHash ?? ''), 'seeded secretHash is encrypted at rest (#1098)');
+    }
 
     // ── Run 2 (Repeated execution to assert idempotency) ────────────────────
     const run2 = await runSeedProcess();
@@ -238,10 +245,13 @@ test('Prisma seed script: idempotency and row count stability against test datab
     const adminRecordRun3 = await prisma.merchant.findUnique({
       where: { id: TEST_ADMIN_ADDRESS },
     });
-    t.equal(
-      adminRecordRun3?.secretHash,
-      hashSecret(updatedSecret),
+    t.ok(
+      verifySecret(updatedSecret, adminRecordRun3?.secretHash ?? ''),
       'existing admin merchant secretHash was updated by upsert',
+    );
+    t.notOk(
+      verifySecret(TEST_ADMIN_SECRET, adminRecordRun3?.secretHash ?? ''),
+      'old admin secret no longer verifies after rotation',
     );
 
     // Reset / clean test merchant before exit

@@ -58,6 +58,7 @@ import {
   startPrismaPoolMetricsCollector,
   encryptField,
   decryptField,
+  hashSecret,
   encryptSensitiveFields,
   decryptSensitiveFields,
   createValidationContext,
@@ -703,10 +704,6 @@ function redactObject(obj: Record<string, any>) {
     }
   }
   return out;
-}
-
-function hashSecret(secret: string): string {
-  return crypto.createHash("sha256").update(secret).digest("hex");
 }
 
 export function normalizeAndValidateEmail(
