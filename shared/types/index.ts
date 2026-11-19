@@ -23,6 +23,17 @@ export function parseAmount(value: string): Amount {
   if (!isAmount(value)) throw new TypeError('Amount must be an unsigned decimal string');
   return value;
 }
+/**
+ * Like parseAmount, but rejects zero ("0", "0.00") for fields that must be
+ * strictly positive (payment/settlement amounts).  Negative values are already
+ * rejected by AMOUNT_PATTERN.  The check is done on the digits rather than via
+ * Number() so arbitrarily precise amounts aren't rounded to zero.
+ */
+export function parsePositiveAmount(value: string): Amount {
+  const amount = parseAmount(value);
+  if (!/[1-9]/.test(amount)) throw new TypeError('Amount must be greater than zero');
+  return amount;
+}
 /** Integer Stellar stroop amount encoded as a string, e.g. "15005000000". */
 export type Stroops = string;
 
@@ -48,15 +59,24 @@ export type PaginatedResponse<T> = {
 
 // Single source of truth for computing pagination metadata so every list
 // endpoint (settlements, events, audit log, ...) reports identical semantics.
+// Inputs are clamped (page >= 1, limit >= 1, total >= 0, all integers) so a
+// bad query string or count can never yield negative totalPages or flags that
+// contradict each other.
 export function buildPaginationMeta(page: number, limit: number, total: number): PaginationMeta {
-  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
-  const totalPages = total === 0 ? 0 : Math.ceil(total / normalizedLimit);
+  const normalizedPage = clampInteger(page, 1);
+  const normalizedLimit = clampInteger(limit, 1);
+  const normalizedTotal = clampInteger(total, 0);
+  const totalPages = normalizedTotal === 0 ? 0 : Math.ceil(normalizedTotal / normalizedLimit);
   return {
-    page,
+    page: normalizedPage,
     limit: normalizedLimit,
-    total,
+    total: normalizedTotal,
     totalPages,
-    hasNext: total > 0 && page < totalPages,
-    hasPrev: page > 1,
+    hasNext: normalizedTotal > 0 && normalizedPage < totalPages,
+    hasPrev: normalizedPage > 1,
   };
+}
+
+function clampInteger(value: number, min: number): number {
+  return Number.isFinite(value) ? Math.max(min, Math.floor(value)) : min;
 }
