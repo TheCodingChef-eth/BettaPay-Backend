@@ -22,6 +22,7 @@ export * from './metrics-server.js';
 export * from './feature-flags.js';
 export * from './startup-checks.js';
 export * from './encryption.js';
+export * from './secret-hash.js';
 export * from './route-audit.js';
 // Expose the merchant cache through the package entry point so services can
 // import it via "@bettapay/validation" instead of relative paths that break
