@@ -167,7 +167,7 @@ export const settlementSchema = z.object({
   batchId: z.string().optional(),
   initiatedAt: isoDateString,
   completedAt: isoDateString.optional(),
-  status: z.enum(["pending", "processing", "completed", "failed"]),
+  status: z.enum(["pending", "processing", "completed", "failed", "superseded"]),
   feeSnapshot: feeSnapshotSchema.optional(),
 });
 
@@ -545,7 +545,9 @@ export const SETTLEMENT_STATUS_TRANSITIONS: Record<string, readonly string[]> =
     pending: ["processing", "failed"],
     processing: ["completed", "failed"],
     completed: [],
-    failed: [],
+    // A failed settlement can be replaced by a retry (supersededById, #1097).
+    failed: ["superseded"],
+    superseded: [],
   };
 
 export function isValidTransition(
@@ -695,7 +697,7 @@ export const EventListQuery = PaginationQuery.extend({
 export type EventListQuery = z.infer<typeof EventListQuery>;
 
 export const SettlementListQuery = PaginationQuery.extend({
-  status: z.enum(["pending", "processing", "completed", "failed"]).optional(),
+  status: z.enum(["pending", "processing", "completed", "failed", "superseded"]).optional(),
   from: isoDateString.optional(),
   to: isoDateString.optional(),
   startDate: isoDateString.optional(),

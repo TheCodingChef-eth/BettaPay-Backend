@@ -18,6 +18,8 @@ enum SettlementStatus {
   processing
   completed
   failed
+  // A failed settlement replaced by a retry (see Settlement.supersededById, #1097).
+  superseded
 }
 
 enum KycStatus {
@@ -145,6 +147,8 @@ model IndexedEvent {
   // Postgres index (see migration 20260901000000_dedupe_null_stellarid_indexed_events,
   // #612) is created with it so that two events sharing a (contractId, ledger)
   // pair and a NULL stellarId are also rejected as duplicates.
+  webhookDeliveries IndexedEventWebhookDelivery[]
+
   @@unique([stellarId, contractId, ledger])
   @@index([ledger])
   @@index([type])
@@ -175,6 +179,12 @@ model IndexedEventWebhookDelivery {
   processedAt    DateTime?
   createdAt      DateTime              @default(now())
 
+  // Referential integrity (#1097): a delivery is meaningless without its
+  // source event or subscription, so deleting either (event retention cleanup,
+  // forced replay, webhook unsubscribe) cascades to its delivery rows.
+  indexedEvent IndexedEvent        @relation(fields: [indexedEventId], references: [id], onDelete: Cascade)
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
   @@unique([indexedEventId, subscriptionId])
   @@index([status, createdAt])
   @@index([subscriptionId, status, createdAt])
@@ -192,6 +202,8 @@ model WebhookSubscription {
   lastTestedAt       DateTime?
   lastTestStatus     String?
   lastTestStatusCode Int?
+
+  deliveries IndexedEventWebhookDelivery[]
 }
 
 model AuditLog {

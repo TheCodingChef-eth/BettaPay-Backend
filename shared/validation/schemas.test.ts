@@ -121,7 +121,7 @@ test('property: settlement status transitions are valid and terminal states are 
 // canonical Prisma enums or stops being internally closed.
 test('shared status maps match the canonical status vocabulary and are self-consistent', async (t) => {
   const PAYMENT_STATUSES = ['cancelled', 'completed', 'failed', 'initiated'];
-  const SETTLEMENT_STATUSES = ['completed', 'failed', 'pending', 'processing'];
+  const SETTLEMENT_STATUSES = ['completed', 'failed', 'pending', 'processing', 'superseded'];
 
   await t.test('payment status vocabulary is exactly the Prisma PaymentStatus set', () => {
     assert.deepStrictEqual(Object.keys(PAYMENT_STATUS_TRANSITIONS).sort(), PAYMENT_STATUSES);
