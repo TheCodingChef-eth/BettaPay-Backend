@@ -815,23 +815,20 @@ export async function persistEvent(
     "[Indexer] Event indexed",
   );
 
-  const subs = await loadWebhookSubscriptions();
-  if (subs.length)
-    await (prisma as any).indexedEventWebhookDelivery.createMany({
-      data: subs.map((sub) => ({
-        id: `whd_${crypto.randomUUID().replace(/-/g, "")}`,
-        indexedEventId: id,
-        subscriptionId: sub.id,
-        url: sub.url,
-        event: record,
-        // Encrypt signingSecret on write (#617)
-        signingSecret: sub.signingSecret
-          ? encryptField(sub.signingSecret)
-          : undefined,
-        headers: (sub.headers as Record<string, string> | null) ?? undefined,
-      })),
-      skipDuplicates: true,
-    });
+  await createWebhookDeliveries((subs) =>
+    subs.map((sub) => ({
+      id: `whd_${crypto.randomUUID().replace(/-/g, "")}`,
+      indexedEventId: id,
+      subscriptionId: sub.id,
+      url: sub.url,
+      event: record,
+      // Encrypt signingSecret on write (#617)
+      signingSecret: sub.signingSecret
+        ? encryptField(sub.signingSecret)
+        : undefined,
+      headers: (sub.headers as Record<string, string> | null) ?? undefined,
+    })),
+  );
 
   // #712 — dispatch is no longer run per event. The poll loop runs a single
   // dispatch pass per cycle, after batching all of the cycle's writes.
@@ -864,6 +861,36 @@ async function loadWebhookSubscriptions(): Promise<WebhookSubscription[]> {
     cacheState.subscriptions = { data: freshSubs, cachedAt: now };
   }
   return cacheState.subscriptions.data;
+}
+
+/**
+ * Inserts webhook delivery rows built from the current subscription list.
+ *
+ * IndexedEventWebhookDelivery has a foreign key to WebhookSubscription
+ * (#1097), so a subscription deleted on another indexer instance while still
+ * in this instance's cache makes the insert fail with P2003.  In that case the
+ * cache is dropped and the insert retried once against fresh subscriptions.
+ */
+async function createWebhookDeliveries(
+  buildRows: (subs: WebhookSubscription[]) => Record<string, unknown>[],
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    const subs = await loadWebhookSubscriptions();
+    if (!subs.length) return;
+    try {
+      await (prisma as any).indexedEventWebhookDelivery.createMany({
+        data: buildRows(subs),
+        skipDuplicates: true,
+      });
+      return;
+    } catch (err: any) {
+      if (err?.code !== "P2003" || attempt > 0) throw err;
+      fastify.log.warn(
+        "[Indexer] Webhook subscription cache was stale (FK violation) — reloading and retrying",
+      );
+      cacheState.subscriptions = null;
+    }
+  }
 }
 
 /**
@@ -903,25 +930,21 @@ async function flushIndexedEvents(
   }
 
   if (records.length > 0) {
-    const subs = await loadWebhookSubscriptions();
-    if (subs.length) {
-      await (prisma as any).indexedEventWebhookDelivery.createMany({
-        data: records.flatMap((record) =>
-          subs.map((sub) => ({
-            id: `whd_${crypto.randomUUID().replace(/-/g, "")}`,
-            indexedEventId: record.id,
-            subscriptionId: sub.id,
-            url: sub.url,
-            event: record,
-            signingSecret: sub.signingSecret
-              ? encryptField(sub.signingSecret)
-              : undefined,
-            headers: (sub.headers as Record<string, string> | null) ?? undefined,
-          })),
-        ),
-        skipDuplicates: true,
-      });
-    }
+    await createWebhookDeliveries((subs) =>
+      records.flatMap((record) =>
+        subs.map((sub) => ({
+          id: `whd_${crypto.randomUUID().replace(/-/g, "")}`,
+          indexedEventId: record.id,
+          subscriptionId: sub.id,
+          url: sub.url,
+          event: record,
+          signingSecret: sub.signingSecret
+            ? encryptField(sub.signingSecret)
+            : undefined,
+          headers: (sub.headers as Record<string, string> | null) ?? undefined,
+        })),
+      ),
+    );
   }
 
   const deduped = data.length - records.length;

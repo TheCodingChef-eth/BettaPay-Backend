@@ -204,6 +204,55 @@ test('#511 — cache expires after 30 s without refresh (fixed TTL baseline)', a
   }
 });
 
+test('#1097 — stale cached subscription (FK violation) reloads the cache and retries once', async (t) => {
+  await fastify.ready();
+
+  // Simulates a subscription deleted on another indexer instance: it is still
+  // cached here, but the DB foreign key now rejects deliveries pointing at it.
+  cacheState.subscriptions = {
+    data: [{ id: 'sub_deleted', url: 'https://gone.example/hook' } as any],
+    cachedAt: Date.now(),
+  };
+
+  let findManyCalls = 0;
+  const insertedSubIds: string[][] = [];
+  prisma.indexedEvent.create = async (args: any) => ({ ...args.data }) as any;
+  prisma.webhookSubscription.findMany = async () => {
+    findManyCalls++;
+    return [{ id: 'sub_live', url: 'https://live.example/hook' }] as any;
+  };
+  (prisma as any).indexedEventWebhookDelivery.createMany = async (args: any) => {
+    const ids = args.data.map((row: any) => row.subscriptionId);
+    insertedSubIds.push(ids);
+    if (ids.includes('sub_deleted')) {
+      throw Object.assign(new Error('Foreign key constraint violated'), { code: 'P2003' });
+    }
+    return { count: ids.length };
+  };
+
+  try {
+    await persistEvent(null, ['fk_topic'], 'fk_topic', 'contract', 'contractName', 'raw', {}, 10);
+    t.equal(findManyCalls, 1, 'subscriptions reloaded from DB after the FK violation');
+    t.same(insertedSubIds, [['sub_deleted'], ['sub_live']], 'retried once with fresh subscriptions');
+  } catch (err: any) {
+    t.fail(err);
+  }
+
+  // A second FK violation (or any other error) is not swallowed.
+  cacheState.subscriptions = null;
+  (prisma as any).indexedEventWebhookDelivery.createMany = async () => {
+    throw Object.assign(new Error('Foreign key constraint violated'), { code: 'P2003' });
+  };
+  let threw = false;
+  try {
+    await persistEvent(null, ['fk_topic_2'], 'fk_topic_2', 'contract', 'contractName', 'raw', {}, 11);
+  } catch {
+    threw = true;
+  }
+  t.ok(threw, 'persistent FK violation surfaces after one retry');
+  t.end();
+});
+
 test('cleanup', (t) => {
   t.end();
   process.exit(0);
